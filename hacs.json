@@ -1,0 +1,9 @@
+{
+  "name": "HA Virtual Test Devices",
+  "homeassistant": "2025.1",
+  "render_readme": true,
+  "categories": ["integration"],
+  "country": ["US"],
+  "zip_release": true,
+  "filename": "ha-virtual-test-devices.zip"
+}
