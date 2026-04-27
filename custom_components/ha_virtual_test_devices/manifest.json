@@ -1,0 +1,12 @@
+{
+  "domain": "ha_virtual_test_devices",
+  "name": "HA Virtual Test Devices",
+  "version": "0.1.0",
+  "documentation": "https://github.com/YOURUSERNAME/ha-virtual-test-devices",
+  "issue_tracker": "https://github.com/YOURUSERNAME/ha-virtual-test-devices/issues",
+  "codeowners": ["@YOURGITHUB"],
+  "dependencies": [],
+  "iot_class": "local_polling",
+  "requirements": [],
+  "config_flow": true
+}

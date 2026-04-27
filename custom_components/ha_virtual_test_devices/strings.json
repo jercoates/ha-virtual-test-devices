@@ -1,0 +1,10 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Virtual Test Devices",
+        "description": "Add a full set of virtual test devices for automation testing."
+      }
+    }
+  }
+}
