@@ -4,7 +4,6 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, UnitOfIlluminance
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -14,9 +13,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     entities = [
-        VirtualSensor("temp_sensor", "Virtual Temperature Sensor", SensorDeviceClass.TEMPERATURE, UnitOfTemperature.CELSIUS, 22.0),
+        VirtualSensor("temp_sensor", "Virtual Temperature Sensor", SensorDeviceClass.TEMPERATURE, "°C", 22.0),
         VirtualSensor("humidity_sensor", "Virtual Humidity Sensor", SensorDeviceClass.HUMIDITY, "%", 45.0),
-        VirtualSensor("lux_sensor", "Virtual Lux Sensor", SensorDeviceClass.ILLUMINANCE, UnitOfIlluminance.LUX, 300.0),
+        VirtualSensor("lux_sensor", "Virtual Lux Sensor", SensorDeviceClass.ILLUMINANCE, "lx", 300.0),
     ]
     async_add_entities(entities)
 
