@@ -12,11 +12,11 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     entities = [
-        VirtualBinarySensor("motion_sensor", "Virtual Motion Sensor", BinarySensorDeviceClass.MOTION, "Motion", "Clear"),
-        VirtualBinarySensor("door_sensor", "Virtual Door Sensor", BinarySensorDeviceClass.DOOR, "Open", "Closed"),
-        VirtualBinarySensor("smoke_detector", "Virtual Smoke Detector", BinarySensorDeviceClass.SMOKE, "Smoke", "Clear"),
-        VirtualBinarySensor("water_sensor", "Virtual Water Leak Sensor", BinarySensorDeviceClass.MOISTURE, "Leak", "Dry"),
-        VirtualBinarySensor("co_detector", "Virtual CO Detector", BinarySensorDeviceClass.CO, "Detected", "Clear"),
+        VirtualBinarySensor("motion_sensor", "Virtual Motion Sensor", BinarySensorDeviceClass.MOTION),
+        VirtualBinarySensor("door_sensor", "Virtual Door Sensor", BinarySensorDeviceClass.DOOR),
+        VirtualBinarySensor("smoke_detector", "Virtual Smoke Detector", BinarySensorDeviceClass.SMOKE),
+        VirtualBinarySensor("water_sensor", "Virtual Water Leak Sensor", BinarySensorDeviceClass.MOISTURE),
+        VirtualBinarySensor("co_detector", "Virtual CO Detector", BinarySensorDeviceClass.CO),
     ]
     async_add_entities(entities)
 
@@ -24,12 +24,10 @@ class VirtualBinarySensor(BinarySensorEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(self, unique_id: str, name: str, device_class: str, on_label: str = None, off_label: str = None):
+    def __init__(self, unique_id: str, name: str, device_class: str):
         self._attr_unique_id = f"{DOMAIN}_{unique_id}"
         self._attr_name = name
         self._attr_device_class = device_class
-        self._on_label = on_label
-        self._off_label = off_label
         self._attr_is_on = False
 
         self._attr_device_info = DeviceInfo(
@@ -40,8 +38,12 @@ class VirtualBinarySensor(BinarySensorEntity):
             suggested_area=AREA_NAME,
         )
 
+    # Make it controllable in UI
+    _attr_assumed_state = True
+    _attr_should_poll = False
+
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         return self._attr_is_on
 
     async def async_turn_on(self, **kwargs):
