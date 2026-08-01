@@ -1,50 +1,110 @@
-# HA Virtual Test Devices
+# Virtual Test Devices for Home Assistant
 
-A simple custom integration that creates 12 realistic virtual devices for testing automations in Home Assistant — especially useful with **PistonCore**.
+Virtual devices for testing Home Assistant automations — including **clones of
+your real devices** that report the same abilities, so you can try an automation
+against a stand-in instead of the real thing.
 
-One click gives you motion, smoke, water leak, CO, door, lock, light, and more — all properly registered as real devices.
+Works entirely on its own from Home Assistant's own **Settings → Actions**. It is
+also the test bench for [PistonCore](https://github.com/jercoates/pistoncore-v2),
+which is what it was built for — but nothing here needs PistonCore installed.
 
-### Features
-- Creates 12 individual virtual devices in a **"Test"** area
-- Uses correct device classes (proper icons and behavior)
-- Easy to trigger states for testing complex automations
-- Clean removal — disable the integration and everything disappears
-- Includes a ready-to-use **Virtual Test Lab** dashboard
-
-### Installation
-
-1. Copy the `custom_components/ha_virtual_test_devices` folder into your Home Assistant `/homeassistant/custom_components/` (or `/config/custom_components/`) folder.
-2. Restart Home Assistant.
-3. Go to **Settings → Devices & Services → Add Integration** → Search for **"HA Virtual Test Devices"** and add it.
-
-### After Installation
-
-1. Go to the **Test** area (it should appear automatically).
-2. **Import the Test Dashboard** (recommended):
-   - Go to **Settings → Dashboards**
-   - Click the three dots in the top right → **Import dashboard**
-   - Paste the content from `test_dashboard.yaml` (included in this repo)
-   - Save
-
-You now have big, easy-to-use buttons to trigger smoke, water leak, motion, etc.
-
-### Included Virtual Devices
-- Virtual Motion Sensor
-- Virtual Door Sensor
-- Virtual Smoke Detector
-- Virtual Water Leak Sensor
-- Virtual CO Detector
-- Virtual Lock
-- Virtual Temperature Sensor
-- Virtual Humidity Sensor
-- Virtual Lux Sensor
-- Virtual Switch
-- Virtual Dimmable Light
-- Virtual Media Player
-
-### Purpose
-Perfect for testing automations safely before buying hardware, especially tricky ones involving smoke, water, or CO detectors.
+> [!IMPORTANT]
+> This is a fork of [twrecked/hass-virtual](https://github.com/twrecked/hass-virtual)
+> and **uses the same `virtual` domain**, so it installs to the same folder.
+> Install this **or** hass-virtual, not both.
 
 ---
 
-Made for easy testing with PistonCore and standard Home Assistant automations.
+## What it adds over hass-virtual
+
+**More device kinds.** Upstream covers binary_sensor, sensor, switch, light,
+lock, fan, cover, valve, number and device_tracker. This fork adds
+`alarm_control_panel`, `climate`, `media_player`, `siren`, `humidifier`,
+`vacuum`, `button` and `event`.
+
+**Devices that state their real abilities.** Every platform accepts Home
+Assistant's `supported_features` plus the mode lists and limits that go with it,
+instead of hardcoding one shape per domain. A virtual thermostat can be a
+cool-only single-setpoint unit or a full heat/cool-range one with fan and preset
+menus, because that is what you told it to be.
+
+**Cloning a real device** (`virtual.clone_device`). Point it at a device you own
+and it creates a test copy reporting the same abilities — mode lists, limits,
+feature flags. The list of what gets copied comes from Home Assistant's own
+definition of capability attributes, not from guesswork, so it keeps up as HA
+adds them.
+
+**Describing a device without creating it** (`virtual.describe_device`) returns
+that same specification as data — useful for putting "here is what my device
+looks like" into a bug report so somebody else can rebuild it.
+
+### What cloning will and will not do
+
+It reproduces **shape, not behaviour**: what a device *says it can do*, not how
+its own integration handles values. A capability or shape bug is reproducible on
+a clone. A bug in how some bridge mangles a value on the way through is not, and
+no amount of attribute copying will change that.
+
+It also **never copies lock or alarm codes**. Bridged panels and locks expose
+user code tables — sometimes plaintext PINs with the names attached — and sticking
+to Home Assistant's capability attributes keeps all of it out. That matters if you
+share a clone in a bug report.
+
+---
+
+## Fixes carried over upstream
+
+Three bugs that each caused **silent** data loss, all found and fixed here:
+
+- **Concurrent creates lost devices.** `create_device` / `remove_device` did
+  read-modify-write on one file then reloaded. Fired together, every caller read
+  before any caller wrote — six concurrent creates produced one device and
+  reported success. Now serialised, with a burst collapsing to a single reload.
+- **A failed save destroyed the device file.** The savers opened the real file in
+  write mode (truncating it) and only then serialised, swallowing failures at
+  debug level. One value yaml couldn't represent emptied the file, wiped every
+  device, and left the integration unable to load — with nothing in the log.
+  Now: serialise first, write via a temp file, replace atomically, and log loudly.
+- **`lock.open` never worked.** It called a stub that always raised.
+
+---
+
+## Install
+
+Add this repository to HACS as a custom repository (type: Integration), install,
+and restart Home Assistant. Then add **Virtual Test Devices** from
+Settings → Devices & Services → Add Integration.
+
+## Usage
+
+Everything is a normal Home Assistant action, so it all works from
+**Settings → Actions** with no other software:
+
+| action | what it does |
+|---|---|
+| `virtual.clone_device` | make a test copy of a real device, abilities included |
+| `virtual.describe_device` | return that copy's specification without creating it |
+| `virtual.create_device` | create a device from an explicit list of entities |
+| `virtual.remove_device` | remove one |
+| `virtual.set` | set a sensor's value |
+| `virtual.set_available` | mark a device available or unavailable |
+| `virtual.fire_event` | fire a button / scene event |
+| `virtual.turn_on` / `turn_off` / `toggle` / `move` | drive a device directly |
+
+Per-platform configuration options are documented in
+**[UPSTREAM_README.md](UPSTREAM_README.md)** — upstream's documentation, kept
+because it is still accurate for everything it covers.
+
+## Tests
+
+`tests/` guards the three data-loss bugs above and the cloning rules. See
+[tests/README.md](tests/README.md) — they run inside a Home Assistant container
+and need nothing beyond HA and pytest.
+
+## Credit and licence
+
+A fork of [twrecked/hass-virtual](https://github.com/twrecked/hass-virtual) by
+**@twrecked**, whose work this is built on. GPL-3.0, unchanged — see
+[LICENSE](LICENSE). Upstream copyright headers are intact.
+
+Please report problems with **this fork** here rather than upstream.

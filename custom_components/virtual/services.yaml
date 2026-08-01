@@ -1,0 +1,187 @@
+# Describes the format for available virtual services
+
+turn_on:
+  name: Turn On
+  description: Turn on a binary sensor.
+  target:
+    entity:
+      integration: virtual
+      domain: binary_sensor
+
+turn_off:
+  name: Turn Off
+  description: Turn off a binary sensor.
+  target:
+    entity:
+      integration: virtual
+      domain: binary_sensor
+
+toggle:
+  name: Toggle
+  description: Toggle a binary sensor.
+  target:
+    entity:
+      integration: virtual
+      domain: binary_sensor
+
+set:
+  name: Set
+  description: Set the value of a sensor.
+  target:
+    entity:
+      integration: virtual
+      domain: sensor
+  fields:
+    value:
+      name: Value
+      description: Value to set state to.
+      required: true
+      example: '10'
+      selector:
+        text:
+
+set_available:
+  name: Set Availability
+  description: Set availability of an entity.
+  target:
+    entity:
+      integration: virtual
+  fields:
+    value:
+      name: Value
+      description: Is the entity available.
+      example: false
+      required: true
+      selector:
+        boolean:
+
+move:
+  name: Move
+  description: Move a device tracker to a new location.
+  target:
+    entity:
+      integration: virtual
+      domain: device_tracker
+  fields:
+    location:
+      name: Named Location
+      description: Where to move the device tracker to.
+      example: 'home'
+      selector:
+        text:
+    gps:
+      name: GPS Location
+      description: Which coordinates to move the device tracker to.
+      example: '{"latitude": -27.9699373, "longitude": 153.4081865}'
+      selector:
+        location:
+          radius: false
+    gps_accuracy:
+      selector:
+        number:
+          min: 0
+          mode: box
+          unit_of_measurement: "m"
+
+# --- PistonCore additions (FORK_NOTES.md): live create/remove of a test device ---
+create_device:
+  name: Create device (PistonCore)
+  description: >-
+    Create a virtual (test) device live and group its entities under one device,
+    without editing the group's yaml by hand. PistonCore calls this; usable
+    standalone too.
+  fields:
+    group_name:
+      name: Group
+      description: Which virtual group's file to write to. Omit if you only have one.
+      required: false
+      example: 'Test Devices'
+      selector:
+        text:
+    device_name:
+      name: Device name
+      description: The device to create; its entities are grouped under it.
+      required: true
+      example: 'Test Multi Sensor'
+      selector:
+        text:
+    entities:
+      name: Entities
+      description: >-
+        List of entity definitions, each with a 'platform' plus that platform's
+        normal virtual options (name, class, initial_value, unit_of_measurement).
+      required: true
+      example: >-
+        [{"platform": "binary_sensor", "name": "Test Motion", "class": "motion",
+        "initial_value": "off"}, {"platform": "sensor", "name": "Test Lux",
+        "class": "illuminance", "initial_value": "100"}]
+      selector:
+        object:
+
+clone_device:
+  name: Clone a real device (PistonCore)
+  description: >-
+    Make a test copy of one of your real devices that reports the SAME abilities
+    it does — its mode lists, limits and supported features — so a piston can be
+    tried against a stand-in instead of the real thing. Copies what the device
+    says it can DO; it cannot reproduce how the real device's own integration
+    behaves. Never copies lock or alarm codes.
+  fields:
+    device_id:
+      name: Device to copy
+      description: The real device to make a test copy of.
+      required: true
+      selector:
+        device:
+    group_name:
+      name: Group
+      description: Which virtual group to create the copy in. Omit if you only have one.
+      required: false
+      example: 'Test Devices'
+      selector:
+        text:
+    device_name:
+      name: Name for the copy
+      description: What to call the copy. Defaults to "Test — <original name>".
+      required: false
+      example: 'Test — Living Room Thermostat'
+      selector:
+        text:
+
+fire_event:
+  name: Fire event (PistonCore)
+  description: >-
+    Fire a chosen event type on a virtual event entity — for testing button /
+    scene / multi-tap pistons (press, hold, double_press, …).
+  target:
+    entity:
+      integration: virtual
+      domain: event
+  fields:
+    event_type:
+      name: Event type
+      description: The event type to fire (e.g. press, hold, double_press).
+      required: true
+      example: "double_press"
+      selector:
+        text:
+
+remove_device:
+  name: Remove device (PistonCore)
+  description: >-
+    Remove a virtual (test) device and all its entities live, with no orphans.
+  fields:
+    group_name:
+      name: Group
+      description: Which virtual group. Omit if you only have one.
+      required: false
+      example: 'Test Devices'
+      selector:
+        text:
+    device_name:
+      name: Device name
+      description: The device to remove.
+      required: true
+      example: 'Test Multi Sensor'
+      selector:
+        text:
