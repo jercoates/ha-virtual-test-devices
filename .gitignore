@@ -1,0 +1,23 @@
+# Compiled Python — never belongs in the repo. HACS ships the whole
+# custom_components folder to every user, so anything committed here is
+# downloaded by them too. 29 .pyc files were committed by accident when the
+# integration was first copied across (they came from a test container writing
+# into a mounted config folder).
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Home Assistant runtime artifacts, if anyone tests inside a checkout
+.storage/
+*.log
+*.log.*
+home-assistant*.db*
+.HA_VERSION
+deps/
+tts/
+
+# Test/venv noise
+.pytest_cache/
+.venv/
+venv/
+.coverage
