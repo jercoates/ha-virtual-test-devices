@@ -47,7 +47,7 @@ from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from . import get_entity_configs
 from .const import *
-from .entity import VirtualEntity, virtual_schema
+from .entity import FEATURES_SCHEMA, VirtualEntity, feature_flags, virtual_schema
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ EVENT_SENT = "virtual_notify_sent"
 # A notifier has no state to restore; initial_value is unused but virtual_schema
 # wants a default, same as button and camera.
 BASE_SCHEMA = virtual_schema("", {
+    **FEATURES_SCHEMA,
     vol.Optional(CONF_CLASS): cv.string,
 })
 
@@ -86,10 +87,12 @@ async def async_setup_entry(
 class VirtualNotify(VirtualEntity, NotifyEntity):
     """Representation of a Virtual notifier."""
 
-    _attr_supported_features = NotifyEntityFeature.TITLE
-
     def __init__(self, config, old_style: bool):
         super().__init__(config, PLATFORM_DOMAIN, old_style)
+        # A real notifier may or may not take a title; a clone must say what the
+        # original said rather than always claiming it does.
+        self._attr_supported_features = feature_flags(
+            config, NotifyEntityFeature, NotifyEntityFeature.TITLE)
         self._kind = config.get(CONF_CLASS) or "generic"
         self._count = 0
         self._last_message = None
