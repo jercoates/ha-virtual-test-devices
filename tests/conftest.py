@@ -43,10 +43,24 @@ class FakeConfigEntries:
         await asyncio.sleep(0)
 
 
+class FakeConfig:
+    """Just enough of hass.config for code that resolves a file under /config."""
+
+    def __init__(self, config_dir):
+        self.config_dir = pathlib.Path(config_dir)
+
+    def path(self, *parts) -> str:
+        target = self.config_dir.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return str(target)
+
+
 class FakeHass:
-    def __init__(self):
+    def __init__(self, config_dir=None):
         self.data = {}
         self.config_entries = FakeConfigEntries()
+        # Only the tests that load a group's config need this.
+        self.config = FakeConfig(config_dir) if config_dir else None
 
 
 class FakeEntry:
