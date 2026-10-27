@@ -191,4 +191,13 @@ A fork of [twrecked/hass-virtual](https://github.com/twrecked/hass-virtual) by
 **@twrecked**, whose work this is built on. GPL-3.0, unchanged — see
 [LICENSE](LICENSE). Upstream copyright headers are intact.
 
+The idea of **exporting a real Home Assistant as stand-ins**, and several of the
+problems that come with it (entities keeping their real ids, devices carrying their
+maker, model and area, the `select` and `text` platforms, an export-only mode, and
+removing one entity without removing its device), came from
+[DevLn](https://github.com/DevLn)'s fork of this project, on the
+[`ha-test-sim` branch](https://github.com/DevLn/ha-virtual-test-devices/tree/ha-test-sim).
+The code in this repository was written separately, but that fork found the traps
+first, and this work would have been slower and riskier without it. Thank you.
+
 Please report problems with **this fork** here rather than upstream.
