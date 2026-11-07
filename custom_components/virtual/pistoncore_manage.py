@@ -30,14 +30,16 @@ Service: virtual.remove_device
 
 import asyncio
 import logging
+import os
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
-from .const import COMPONENT_DOMAIN, ATTR_GROUP_NAME, ATTR_FILE_NAME
-from .cfg import _load_user_data, _save_user_data
+from .const import COMPONENT_DOMAIN, ATTR_DEVICES, ATTR_GROUP_NAME, ATTR_FILE_NAME
+from .cfg import _async_read_user_file, _save_user_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,6 +86,7 @@ def _find_entry(hass: HomeAssistant, group_name):
 
 _LOCKS = "pistoncore_mutation_locks"
 _WAITING = "pistoncore_mutation_waiting"
+_DIRTY = "pistoncore_mutation_dirty"
 
 
 async def _mutate_and_reload(hass: HomeAssistant, entry, describe: str, mutate) -> None:
@@ -97,42 +100,112 @@ async def _mutate_and_reload(hass: HomeAssistant, entry, describe: str, mutate) 
     error of any kind. PistonCore's clone panel hits this the moment it creates
     more than one device, and so would any standalone UI.
 
-    Two guarantees here:
+    Three guarantees here:
       * the load/change/save runs under a per-entry lock, so no change is lost;
       * a burst of changes triggers ONE reload at the end, not one each —
         whoever finds no one else waiting does it. Reloading per call is what
-        made the window wide enough to hit in the first place.
+        made the window wide enough to hit in the first place;
+      * that reload happens if ANY call in the burst changed the file, even when
+        the last one failed or was cancelled. It used to be skipped then, which
+        left a device in the file that never appeared, and a call cancelled
+        while it waited for the lock left the count above zero for good, so no
+        later call on that group ever reloaded again.
+
+    And it will not write over a file it could not read. A file that is blank,
+    does not parse or is not a mapping reads as "no devices", and saving one more
+    device on top of that replaced every existing device with it and reported
+    success. The same goes for a file that has gone missing from a group that is
+    running: that is a mount that did not come up, not a new group.
     """
     lock = hass.data.setdefault(_LOCKS, {}).setdefault(entry.entry_id, asyncio.Lock())
     waiting = hass.data.setdefault(_WAITING, {})
+    dirty = hass.data.setdefault(_DIRTY, set())
     waiting[entry.entry_id] = waiting.get(entry.entry_id, 0) + 1
 
-    async with lock:
+    reload_now = False
+    try:
         try:
-            file_name = entry.data[ATTR_FILE_NAME]
-            devices = await _load_user_data(file_name)
-            if not isinstance(devices, dict):
-                devices = {}
-            mutate(devices)
-            await _save_user_data(file_name, devices)
-            _LOGGER.info("virtual: %s in group '%s'", describe,
-                         entry.data.get(ATTR_GROUP_NAME))
+            async with lock:
+                file_name = entry.data[ATTR_FILE_NAME]
+                group = entry.data.get(ATTR_GROUP_NAME)
+                devices, trusted = await _async_read_user_file(file_name)
+                if not trusted:
+                    raise HomeAssistantError(
+                        f"virtual: not changing '{group}': its devices file could "
+                        f"not be read (see the log). Saving now would replace "
+                        f"everything in it. Fix the file first.")
+                if not devices and hass.data.get(COMPONENT_DOMAIN, {}).get(
+                        group, {}).get(ATTR_DEVICES) and not await hass.async_add_executor_job(
+                            os.path.exists, file_name):
+                    raise HomeAssistantError(
+                        f"virtual: not changing '{group}': its devices file has "
+                        f"gone missing while the group has devices. Put it back "
+                        f"first, or saving now would replace them all.")
+                mutate(devices)
+                # Marked BEFORE the save: the replace runs in an executor job that
+                # finishes even if this call is cancelled while awaiting it, and a
+                # file that changed with no reload to follow is the bug this flag
+                # exists to prevent. A reload after a save that failed is harmless.
+                dirty.add(entry.entry_id)
+                await _save_user_data(file_name, devices)
+                _LOGGER.info("virtual: %s in group '%s'", describe, group)
         finally:
             waiting[entry.entry_id] -= 1
-            last = waiting[entry.entry_id] <= 0
+            if waiting[entry.entry_id] <= 0 and entry.entry_id in dirty:
+                dirty.discard(entry.entry_id)
+                reload_now = True
+    finally:
+        # Outside the lock: a reload sets the platforms up again, which must not
+        # block the next caller's file edit.
+        if reload_now:
+            await hass.config_entries.async_reload(entry.entry_id)
 
-    # Outside the lock: a reload sets the platforms up again, which must not
-    # block the next caller's file edit.
-    if last:
-        await hass.config_entries.async_reload(entry.entry_id)
+
+async def check_entries(hass: HomeAssistant, entities: list) -> None:
+    """Refuse entries the platforms would reject, BEFORE anything is written.
+
+    A platform validates each entry inside its setup loop and one that fails
+    raises, so none of that platform's entities in the group are created. Saving a
+    bad entry therefore made every entity of its type vanish at the next reload,
+    while the call reported success. The platforms' own schemas decide here, the
+    same ones export already checks against."""
+    from .export import _problem, load_platform_schemas  # export imports clone, which imports this
+    schemas = await hass.async_add_executor_job(load_platform_schemas)
+    # The loader names an unnamed entry itself (from its device and class), so
+    # an entry with no name is fine. The platform schema just cannot know that.
+    bad = [f"{entry.get('name') or entry.get('platform')}: {problem}"
+           for entry in entities
+           if (problem := _problem({**entry, "name": entry.get("name") or "unnamed"},
+                                   schemas))]
+    if bad:
+        raise ServiceValidationError(
+            "virtual: nothing was changed, because these entries would not load: "
+            + "; ".join(bad))
+
+
+def free_device_name(devices: dict, wanted: str) -> str:
+    """`wanted`, or `wanted (2)`, `wanted (3)`... the first the file does not use.
+    A name that is already there must never be silently replaced."""
+    if wanted not in devices:
+        return wanted
+    number = 2
+    while f"{wanted} ({number})" in devices:
+        number += 1
+    return f"{wanted} ({number})"
 
 
 async def _async_create_device(hass: HomeAssistant, call) -> None:
     entry = _find_entry(hass, call.data.get(ATTR_GROUP_NAME))
     name = call.data[CONF_DEVICE_NAME]
     entities = call.data[CONF_ENTITIES]
+    await check_entries(hass, entities)
 
     def _add(devices):
+        # This used to replace a device of the same name without a word.
+        if name in devices:
+            raise ServiceValidationError(
+                f"virtual: group '{entry.data.get(ATTR_GROUP_NAME)}' already has a "
+                f"device called '{name}'. Remove it first, or choose another name.")
         devices[name] = entities
 
     await _mutate_and_reload(hass, entry, f"created test device '{name}'", _add)
@@ -173,10 +246,11 @@ def async_register_manage_services(hass: HomeAssistant) -> None:
     async def remove_device(call):
         await _async_remove_device(hass, call)
 
-    hass.services.async_register(
-        COMPONENT_DOMAIN, SERVICE_CREATE_DEVICE, create_device,
+    # Admin only: both rewrite a group's devices file.
+    async_register_admin_service(
+        hass, COMPONENT_DOMAIN, SERVICE_CREATE_DEVICE, create_device,
         schema=CREATE_DEVICE_SCHEMA)
-    hass.services.async_register(
-        COMPONENT_DOMAIN, SERVICE_REMOVE_DEVICE, remove_device,
+    async_register_admin_service(
+        hass, COMPONENT_DOMAIN, SERVICE_REMOVE_DEVICE, remove_device,
         schema=REMOVE_DEVICE_SCHEMA)
     _LOGGER.debug("virtual: registered create_device/remove_device services")

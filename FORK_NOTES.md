@@ -48,10 +48,35 @@ This folder is a **fork of [`twrecked/hass-virtual`](https://github.com/twrecked
   TRUNCATES IT TO ZERO) and only *then* serialized. Anything yaml couldn't
   represent therefore wiped the file, and the exception was swallowed at DEBUG
   level so nothing reported it. The integration then refused to load at all,
-  because `_load_user_data` called `.get` on the `None` an empty file parses to.
+  because the loader called `.get` on the `None` an empty file parses to.
   Now: serialize first, write to a temp file and `os.replace` it into place, log
-  failures at ERROR and re-raise; and `_load_user_data` degrades to "no devices"
-  rather than taking the integration down. Worth carrying upstream.
+  failures at ERROR and re-raise; and the loader (`_async_read_user_file`)
+  degrades to "no devices" rather than taking the integration down. Worth
+  carrying upstream.
+- **A change is never written over a file that could not be read.** That
+  same degrade-to-"no devices" made `create_device`/`clone_device` hazardous: with
+  the file blank, mid-copy or holding a typo, they added one device to nothing and
+  saved, replacing every existing device and reporting success. The loader already
+  said whether the file was believable; the writer ignored it. It now refuses, with
+  the file untouched. The same distrust now covers: a devices file that has gone
+  MISSING from a group that already has devices (a mount that did not come up reads
+  exactly like a new group, and "lists nothing" removed every row); and a DAMAGED
+  identity (meta) file, which used to read as empty, so every entity got a fresh
+  unique id, the old rows were removed as orphans and the bad file was overwritten.
+  The group now waits (`ConfigEntryNotReady`) with the reason, instead.
+  The reload after a burst of changes also happens when ANY call changed the file,
+  even if the last one failed or was cancelled; a call cancelled while waiting for
+  the lock used to leave the waiting count above zero for good, so the group never
+  reloaded again until Home Assistant restarted.
+- **Nothing is replaced or loaded blind.** `create_device` and `clone_device` check
+  every entry against the platform's own schema BEFORE writing (the platforms
+  validate inside their setup loop, so one bad entry used to make every entity of
+  its type vanish at the next reload, with the call reporting success). A device
+  name already in the file is no longer replaced in silence: a name the caller
+  chose is an error, and a default clone name takes the next free `Name (2)`.
+  `export_devices` only replaces a file an earlier export wrote (they all start with
+  the same first line), never a group's own devices file, and one export runs at a
+  time; before, `file:` could point at `configuration.yaml`.
 - **Concurrency: `create_device`/`remove_device` were racing.** Both did
   read-modify-write on one yaml file then reloaded the config entry. Fired
   concurrently, every caller loaded before any caller saved, so all but the last
@@ -243,7 +268,106 @@ a clear message each, and left a separate hand-made group alone.
 **Known fidelity limits found while doing this (existing platform behaviour, not new,
 and not fixed here):** a valve always advertises open, close, stop and set-position
 whatever the original did; a media player deliberately masks browse and search; a
-virtual camera has no stream.
+virtual camera's "stream" is a 22 s clip (see below), not a live feed.
+
+**Camera video (2026-11-02, verified in a throwaway HA 2026.10.4):** the camera
+advertises STREAM only while `video/camera_clip.mp4` exists, and `stream_source()` hands
+HA that file. Checked live: HA serves HLS segments for it and `camera.record` writes a
+22 s, 277 KB file. HA's stream worker has no real-time pacing for a *file* source, so it
+is consumed at full speed: live view plays the clip once and the stream then ends (HLS
+returns 404 about a minute in; a new request restarts it). **Tried and rejected:** a
+playlist repeating the clip 200 times to make a long feed — it read cleanly (65,800
+packets, no timestamp jumps) but made a 10 s `camera.record` write 46 MB, so a real
+loop needs a paced source (an ffmpeg process feeding a local stream), which is not built.
+The clip is the FBI Honolulu security-camera recording of the 2009 Pago Pago parking-lot
+tsunami (public domain, Wikimedia Commons), re-encoded to H.264 MP4, no audio.
+
+## The sidebar panel (`panel.py`, `frontend/virtual-panel.js`, `templates.json`)
+
+A standalone UI, so the add-on is usable with no PistonCore at all. Design:
+
+- **Registered once per Home Assistant, from `async_setup`**, before the
+  `export_only` return (an exporting home is where its export screen is wanted).
+  Never per group: a second registration of the same panel path or static path
+  raises. Registered only when Home Assistant calls `async_setup`, which for a
+  config-flow integration means at least one group exists or `virtual:` is in
+  `configuration.yaml`. A brand-new install with neither has no panel. VERIFIED.
+- **Admin-only commands**, no raw configs: `virtual/groups`, `virtual/devices`,
+  `virtual/templates`, `virtual/clonable`. They return names, states and
+  structure only; a group's entity configs can hold lock and alarm codes and text
+  defaults and are never returned. A non-admin gets `unauthorized` and does not see
+  the panel (VERIFIED, 2026.10.4 and 2026.8.0b3). The script itself is a static
+  file and is served without a login (VERIFIED) — it holds nothing private.
+- **State is Home Assistant's, not ours.** The panel reads `hass.states`, so
+  nothing is polled and a change from anywhere shows. Structure (which devices)
+  comes from `virtual/devices`, refreshed on registry events.
+- **Every control calls an ordinary action** (`light.turn_on`, `number.set_value`,
+  ...). `controlsFor`/`callFor` in the JS are the whole mapping and are exported so
+  they can be tested without a browser. A control is hidden when the entity's own
+  `supported_features` says it cannot do it (a thermostat with no target
+  temperature, a speaker with no volume).
+- **`templates.json` is data**, the catalog of device kinds to create. It is checked
+  against every platform's own schema by `tests/test_panel.py`, and must offer every
+  platform. PistonCore's page has its own copy of a similar catalog until it reads
+  this one.
+- **The actions are admin-only too.** `create_device`, `remove_device`,
+  `clone_device`, `describe_device` and `export_devices` are registered with
+  Home Assistant's admin-service helper. They rewrite a group's file, or (describe)
+  return a real device's whole capability spec, and before this a non-admin user
+  could call any of them over the websocket. VERIFIED live: a non-admin is refused
+  with "Unauthorized" and nothing changes; the admin still can; PistonCore (an
+  admin's token) and automations (no user; VERIFIED live: an automation started by a non-admin's action still ran the service) are unaffected, while a script a non-admin runs acts as that person. This is a behaviour
+  change for anyone who let a non-admin call them.
+- **A panel failure never stops the test devices loading.** Registration is wrapped
+  in `async_setup`; a failure is logged and the integration carries on.
+- **The list is only redrawn when it changed**, so a half-typed value, a "Remove
+  it?" waiting for its second click and a status message survive the registry events
+  Home Assistant sends for changes that are not ours.
+- **A lock records the code it was sent (`last_code`) and counts every action
+  (`sequence`).** So an automation that reacts to a code being used can be tested
+  without a keypad, for locks that report a code on lock, on unlock, or both. The
+  count matters: using the same code on a lock already in that state changes nothing
+  else Home Assistant can see, so an automation waiting for it would never run.
+  VERIFIED live with three real automations (a state trigger on "unlocked", one on
+  `last_code` changing, one on `sequence`): a first use ran all three; the same code
+  again ran only the `sequence` one; a lock with no code ran the code-changed and
+  sequence ones; a different code ran all three. The code is whatever the caller sends
+  and sits in `last_code`, so it is also in every `state_changed` event, in the trace of
+  any automation the lock triggers, in states any logged-in user can read, and in the
+  recorder until purged (10 days by default); each use is its own history row because
+  `sequence` changes. It must be a made-up test code. Trade-off: a bare state trigger
+  (no `to:`, no `attribute:`) now also fires on a repeat use a real lock would not
+  announce. A default code set in Home Assistant's entity options is supplied by Home
+  Assistant on code-less actions and so shows as `last_code`. (Found by a review agent.) A real lock's codes are still never copied by a clone or export (`last_code` is
+  not in the capture list; `test_capability_capture.py` pins that). The page keeps the
+  saved names and codes in the browser, never in the add-on. **Sending (2026-11-04):** the
+  tile has a code box with Lock/Unlock that sends at once (Jeremy: saving first meant extra
+  clicks he did not want); after a successful send of an unsaved code a one-line, optional
+  "Save this?" appears (name optional, defaults to the number); a menu of saved codes
+  fills the box without sending. The earlier "name + code + Save a code" form is still in
+  the collapsed *Codes* section for managing saved ones.
+- **Known gap:** nothing a test vacuum can do ends in "docked" (`return_to_base`
+  stops at "returning"), so it can be created docked but not driven to it. The panel
+  refuses with a message. A decision is needed on whether the vacuum should dock
+  itself after returning.
+- **Known, older, not fixed:** the camera platform scans its `images` folder on the
+  event loop (Home Assistant logs a "blocking call to scandir" warning at start-up).
+- **Known future break found while testing:** `number.py`/`sensor.py` import
+  `CONCENTRATION_*` constants Home Assistant deprecated; they are removed in HA Core
+  2027.8 (Home Assistant logs a warning at every start).
+
+VERIFIED against a running Home Assistant 2026.10.4 with its demo devices, driven
+the way the panel drives them: 29 of 29 templates created, 49 of 49 demo devices
+cloned (every reproducible kind), all 84 resulting entities showing live state,
+and every control's action changing the state it should. Also 2026.8.0b3 for
+registration, admin-only and restart. Also live: removing a device that was renamed
+in Home Assistant (the panel shows the new name, removes by the file key, and
+removing by the display name is refused); cloning with a push and with a text
+notifier (each clone got a notifier); and the admin-only refusals above.
+The page's behaviour is exercised in a simulated browser (`panel_page.test.mjs`,
+needs `jsdom`). NOT verified: how it looks and behaves in a REAL browser (layout,
+theme colours, narrow screens, the sidebar button, the real `hass` object and its
+registry-event subscription).
 
 ## Tests (added 2026-08-01)
 
@@ -261,6 +385,28 @@ optional and falls back to the platform's original hardcoded default. VERIFIED
 behaved identically, including the light and fan paths this fork rewrote most
 (`support_color: true` still gives hs mode; `speed: true` still gives 3 speeds).
 
+## Deprecations cleared (2026-11-06, HA 2026.11.0)
+
+The first run on 2026.11.0 (released 2026-11-04) logged four warnings from this add-on.
+All four are fixed; `tests/test_ha_deprecations.py` keeps them fixed.
+
+- **`CONCENTRATION_PARTS_PER_MILLION` / `CONCENTRATION_MICROGRAMS_PER_CUBIC_METER`**
+  (sensor.py, number.py) → `UnitOfRatio.PARTS_PER_MILLION` / `UnitOfDensity.MICROGRAMS_PER_CUBIC_METER`.
+  VERIFIED on 2026.11.0 that each new member equals the old constant. The enums arrived with
+  2026.7 (per the HA developer blog, 2026-06-30, "new unit enumerators"; not itself checked
+  against HA's source). DECISION (Claude, 2026-11-06, awaiting Jeremy's confirmation): the
+  minimum is raised to 2026.7.0 in `hacs.json` rather than carrying an import fallback.
+  The old constants are removed in HA 2027.8.
+- **Thermostat `_attr_temperature_unit` and `temperature_unit`** (climate.py) →
+  `_attr_native_temperature_unit` / `native_temperature_unit`. The old names are removed in
+  HA 2027.11 (and an ERROR for a custom integration from then). VERIFIED the new name does
+  NOT exist on HA 2026.10.4 (it arrived with 2026.11: 3 thermostat tests failed there before
+  this was handled), so the thermostat picks the name by asking the installed HA
+  (`_UNIT_ATTR`). Nothing else in the add-on needs 2026.11.
+- **Camera listing its images folder on the event loop** (camera.py) → listed once in an
+  executor job at setup and handed to each camera. A camera built without the list (the
+  tests, the old yaml path) still lists the folder itself.
+
 ## Rules
 
 - **Standalone self-sufficiency is REQUIRED** (§5.6): everything works from HA's own
@@ -269,3 +415,20 @@ behaved identically, including the light and fan paths this fork rewrote most
 - Keep it rebase-friendly: prefer ADDING files (new platform modules) over rewriting
   upstream ones, so pulling upstream fixes stays easy.
 - **Split to its own repo at release** (§5.5); in-repo folder is for iteration now.
+
+## The panel was rebuilt as tiles and tabs (2026-11-01)
+
+Four tabs (Devices, Create, Clone a device, Clone everything), flat tiles with a coloured edge
+on a device that is doing something, a live state on every part, switches labelled in words
+(Locked | Unlocked, Clear | Detected), big devices folded with search and pins, lock codes kept
+in the BROWSER and sent in Home Assistant's own `code` field, a Phone kind that asks push or
+text (no other kind does), one optional push/text switch on Clone, and an Export form.
+`virtual: {panel: false}` leaves the sidebar entry out. Bringing devices in from an export file
+is NOT built yet (the tab says so). Checked by review agents (code and tests): they found, and
+it now fixes, a refused choice on a focused select not being put back, the group picker not
+following across tabs, saved codes lost when the browser refuses storage, repeated category
+headings, a double Enter creating twice, and "one" lighting a tile as "on". Verified live:
+the README's own throwaway-Home-Assistant recipe, with Home Assistant's demo devices, ends with
+the panel registered, 30 templates in categories, 49 clonable devices, and a Phone made as a
+text phone getting an `sms` notifier. On Windows the recipe's folder must be a real Windows
+path (a shell path silently mounts an empty folder and Home Assistant starts without the add-on).

@@ -38,23 +38,26 @@ class Registries:
 
 
 class Cfg:
-    def __init__(self, entities, devices, trusted=True):
+    def __init__(self, entities, devices, trusted=True, file_missing=False):
         self.entities = {"switch": [{"unique_id": u} for u in entities]}
         self.devices = [{"device_id": d} for d in devices]
         self.trusted = trusted
+        self.file_missing = file_missing
 
 
 class Entry:
     entry_id = "e1"
 
 
-def _run(monkeypatch, rows, devices, file_entities, file_devices, trusted=True):
+def _run(monkeypatch, rows, devices, file_entities, file_devices, trusted=True,
+         file_missing=False):
     regs = Registries(rows, devices)
     monkeypatch.setattr(virtual.er, "async_get", lambda hass: regs)
     monkeypatch.setattr(virtual.er, "async_entries_for_config_entry", lambda reg, eid: regs.rows)
     monkeypatch.setattr(virtual.dr, "async_get", lambda hass: regs)
     monkeypatch.setattr(virtual.dr, "async_entries_for_config_entry", lambda reg, eid: regs.devices)
-    virtual._async_remove_orphans(None, Entry(), Cfg(file_entities, file_devices, trusted))
+    virtual._async_remove_orphans(
+        None, Entry(), Cfg(file_entities, file_devices, trusted, file_missing))
     return regs
 
 
@@ -91,4 +94,26 @@ def test_nothing_is_removed_when_the_file_could_not_be_trusted(monkeypatch):
     """An unreadable or half-written file reads as 'lists nothing'. Acting on that
     would remove every row in the group, and they would come back under new ids."""
     regs = _run(monkeypatch, ROWS, DEVICES, [], [], trusted=False)
+    assert regs.removed_entities == [] and regs.removed_devices == []
+
+
+def test_nothing_is_removed_when_the_file_has_gone_missing(monkeypatch):
+    """A bind mount that did not come up, or a file renamed, reads as a missing
+    file. For a group that already has rows that is not a new group, and acting on
+    'lists nothing' would remove all of them."""
+    regs = _run(monkeypatch, ROWS, DEVICES, [], [], file_missing=True)
+    assert regs.removed_entities == [] and regs.removed_devices == []
+
+
+def test_a_missing_file_is_fine_for_a_group_that_owns_nothing(monkeypatch):
+    """The control: a brand-new group has no file yet and must still load, and
+    there is nothing for it to remove either way."""
+    regs = _run(monkeypatch, [], [], [], [], file_missing=True)
+    assert regs.removed_entities == [] and regs.removed_devices == []
+
+
+def test_a_missing_file_with_only_device_rows_removes_nothing_either(monkeypatch):
+    """A group whose devices have no entities left still owns those devices, and a
+    vanished file must not remove them."""
+    regs = _run(monkeypatch, [], DEVICES, [], [], file_missing=True)
     assert regs.removed_entities == [] and regs.removed_devices == []

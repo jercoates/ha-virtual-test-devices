@@ -14,6 +14,18 @@ the kind of image it will meet in service.
 Photographs by **Curtis J Coates**, included here under this package's GPL-3.0
 licence.
 
+## The video clip
+
+`../video/camera_clip.mp4` is the clip behind the camera's live view and recording.
+It is a security-camera recording released by the **FBI Honolulu office** of the
+2009 tsunami reaching a parking lot in Pago Pago, American Samoa, from
+[Wikimedia Commons](https://commons.wikimedia.org/wiki/File:FBI_tsunami_video_-_Pago_Pago_parking_lot_-_end.ogv).
+Commons marks it public domain (a work of the US federal government, and a security
+camera video with no human author), so no attribution is required; it is credited
+here anyway. It was converted from Ogg Theora to H.264 MP4 (no audio, 22 s,
+396x340) because Home Assistant's stream expects H.264. Replace the file with any
+other small H.264 MP4 of the same name; remove it and live view is switched off.
+
 ## Replacing them
 
 Drop JPEGs in this folder and remove the ones you don't want; the camera globs

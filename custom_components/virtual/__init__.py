@@ -26,10 +26,10 @@ from homeassistant.core import (
     HomeAssistant,
     callback
 )
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 
 from .const import *
-from .cfg import BlendedCfg, UpgradeCfg
+from .cfg import BlendedCfg, MetaFileError
 
 
 def _manifest_version() -> str:
@@ -51,6 +51,7 @@ CONFIG_SCHEMA = vol.Schema({
         COMPONENT_DOMAIN: vol.Schema({
             vol.Optional(CONF_YAML_CONFIG, default=False): cv.boolean,
             vol.Optional(CONF_EXPORT_ONLY, default=False): cv.boolean,
+            vol.Optional(CONF_PANEL, default=True): cv.boolean,
         }),
     },
     extra=vol.ALLOW_EXTRA,
@@ -121,6 +122,21 @@ async def async_setup(hass, config):
     async_register_export_service(hass)
     export_only = config.get(COMPONENT_DOMAIN, {}).get(CONF_EXPORT_ONLY, False)
     hass.data[COMPONENT_CONFIG][CONF_EXPORT_ONLY] = export_only
+
+    # The sidebar panel. In async_setup, which runs once per Home Assistant,
+    # because the panel and its script path can only be registered once (see
+    # panel.py). A convenience must never stop the test devices loading, so a
+    # failure here is logged and the integration carries on without it.
+    # `virtual: {panel: false}` leaves it out for anyone who only wants the actions.
+    if config.get(COMPONENT_DOMAIN, {}).get(CONF_PANEL, True):
+        try:
+            from .panel import async_register_panel
+            await async_register_panel(hass)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("virtual: the sidebar panel could not be set up; the "
+                              "test devices and actions still work without it")
+    else:
+        _LOGGER.info("virtual: panel is off, so there is no sidebar entry")
     if export_only:
         _LOGGER.info("virtual: export_only is set, so nothing is imported and no new "
                      "group can be added; groups that already exist keep running")
@@ -200,7 +216,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Get the config.
     _LOGGER.debug(f"creating new cfg")
     vcfg = BlendedCfg(hass, entry.data)
-    await vcfg.async_load()
+    try:
+        await vcfg.async_load()
+    except MetaFileError as err:
+        # Loading on would give every entity a new identity and then remove the
+        # old ones. Better a group that waits, with the reason in plain words.
+        raise ConfigEntryNotReady(
+            f"virtual: the identity file for '{entry.data[ATTR_GROUP_NAME]}' is "
+            f"damaged ({err}). Fix it, or delete it to start the group's "
+            f"identities afresh, then reload.") from err
 
     # create the devices.
     _LOGGER.debug("creating the devices")
@@ -356,18 +380,33 @@ def _async_remove_orphans(hass: HomeAssistant, entry: ConfigEntry, vcfg) -> None
     area and customisations. A device now goes only when the file no longer lists
     it. This is also what clears a stand-in that was dropped from a re-exported
     file, which has no meta row to be noticed through.
+
+    A MISSING file is a new group only if the group owns nothing yet. For one that
+    already has registry rows it is what a bind mount that failed to come up, or a
+    file renamed or moved, looks like, and "the file lists nothing" would remove
+    every one of them (history, area and all).
     """
+    title = getattr(entry, "title", None) or entry.entry_id
     if not vcfg.trusted:
         _LOGGER.warning(
             "virtual: not cleaning up the registry for %s, because its devices "
             "file could not be read or had entries that were rejected (see the "
-            "errors above). Nothing is removed until the file is fixed.",
-            getattr(entry, "title", None) or entry.entry_id)
+            "errors above). Nothing is removed until the file is fixed.", title)
+        return
+
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    if vcfg.file_missing and (
+            er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+            or dr.async_entries_for_config_entry(dev_reg, entry.entry_id)):
+        _LOGGER.warning(
+            "virtual: the devices file for %s is missing, but the group already "
+            "has devices. Not removing anything: put the file back, or restore "
+            "it from a copy.", title)
         return
 
     keep_ids = {e[ATTR_UNIQUE_ID]
                 for entities in vcfg.entities.values() for e in entities}
-    ent_reg = er.async_get(hass)
     for row in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
         if row.unique_id not in keep_ids:
             _LOGGER.info("virtual: removing entity %s, no longer in the file",
@@ -375,7 +414,6 @@ def _async_remove_orphans(hass: HomeAssistant, entry: ConfigEntry, vcfg) -> None
             ent_reg.async_remove(row.entity_id)
 
     keep_devices = {(COMPONENT_DOMAIN, d[ATTR_DEVICE_ID]) for d in vcfg.devices}
-    dev_reg = dr.async_get(hass)
     for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
         if not device.identifiers & keep_devices:
             _LOGGER.info("virtual: removing device %s, no longer in the file",

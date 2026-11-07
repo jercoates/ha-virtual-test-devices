@@ -15,7 +15,9 @@ Adds `alarm_control_panel`, `camera`, `climate`, `media_player`, `notify`,
 its real `supported_features`, modes and limits; and fixes three silent
 data-loss bugs.
 
-The camera hands over a real picture, so a snapshot writes a real file. The
+The camera hands over a real picture, so a snapshot writes a real file, and it
+carries a short video clip so live view and recording work too (a clip, not a
+never-ending feed). The
 notifier records what was sent — message, title and a count — so you can see
 what a notification said without owning a phone app or an SMS service.
 

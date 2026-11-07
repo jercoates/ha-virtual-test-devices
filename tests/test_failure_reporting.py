@@ -14,14 +14,25 @@ returned success and did nothing, so a bench stayed full of devices somebody
 believed they had deleted.
 """
 
+import asyncio
+import pathlib
+
 import pytest
+from homeassistant.exceptions import ConfigEntryNotReady
 
-from conftest import FakeEntry, FakeHass, run
+from conftest import FakeEntry, FakeHass, load_devices, run
 
-from custom_components.virtual import VIRTUAL_PLATFORMS, async_unload_entry
-from custom_components.virtual.cfg import _load_user_data, _save_user_data
+from custom_components.virtual import VIRTUAL_PLATFORMS, async_setup_entry, async_unload_entry
+from custom_components.virtual import clone as clone_module
+from custom_components.virtual.cfg import _save_user_data
 from custom_components.virtual.const import COMPONENT_DOMAIN
-from custom_components.virtual.pistoncore_manage import _async_remove_device
+from custom_components.virtual.pistoncore_manage import (
+    _async_create_device,
+    _async_remove_device,
+    _mutate_and_reload,
+    check_entries,
+    free_device_name,
+)
 
 try:
     from homeassistant.exceptions import ServiceValidationError
@@ -116,7 +127,7 @@ def test_a_refused_removal_does_not_touch_the_file(tmp_path):
         run(_async_remove_device(hass, FakeCall(device_name="Never Existed")))
 
     assert open(path, encoding="utf-8").read() == before
-    assert run(_load_user_data(path)) == devices
+    assert run(load_devices(path)) == devices
 
 
 def test_removing_a_real_device_still_works(tmp_path):
@@ -130,5 +141,152 @@ def test_removing_a_real_device_still_works(tmp_path):
 
     run(_async_remove_device(hass, FakeCall(device_name="Drop Me")))
 
-    assert list(run(_load_user_data(path))) == ["Keep Me"]
+    assert list(run(load_devices(path))) == ["Keep Me"]
     assert hass.config_entries.reloads == 1, "a real removal must still reload"
+
+
+# --- an entry or a name that would do damage is refused before anything is written
+
+def _thermostat(*_args):
+    return "Thermo", [{"platform": "switch", "name": "Power"}]
+
+
+def test_free_device_name_takes_the_next_free_number():
+    assert free_device_name({}, "A") == "A"
+    assert free_device_name({"A": []}, "A") == "A (2)"
+    assert free_device_name({"A": [], "A (2)": []}, "A") == "A (3)"
+
+
+def test_an_entry_a_platform_would_reject_is_refused_and_nothing_is_written(tmp_path):
+    """One entry failing its platform's schema raises inside that platform's setup
+    loop, so every entity of that type in the group vanishes at the next reload —
+    and the call used to report success."""
+    hass, entry = _loaded_bench(tmp_path)
+    call = FakeCall(device_name="Bad", entities=[
+        {"platform": "switch", "name": "Fine"},
+        {"platform": "switch", "name": "Broken", "no_such_option": 1}])
+
+    with pytest.raises(ServiceValidationError, match="Broken"):
+        run(_async_create_device(hass, call))
+
+    assert not (tmp_path / "virtual.yaml").exists()
+    assert hass.config_entries.reloads == 0
+
+
+def test_an_unknown_platform_is_refused(tmp_path):
+    hass, _entry = _loaded_bench(tmp_path)
+    with pytest.raises(ServiceValidationError, match="not a platform"):
+        run(check_entries(hass, [{"platform": "sensors", "name": "Typo"}]))
+
+
+def test_a_good_entry_is_accepted(tmp_path):
+    hass, _entry = _loaded_bench(tmp_path)
+    run(check_entries(hass, [{"platform": "switch", "name": "Fine"}]))  # the control
+
+
+def test_creating_over_an_existing_device_name_is_refused_not_replaced(tmp_path):
+    hass, _entry = _loaded_bench(tmp_path)
+    run(_async_create_device(hass, FakeCall(
+        device_name="Same", entities=[{"platform": "switch", "name": "First"}])))
+
+    with pytest.raises(ServiceValidationError, match="already has a device"):
+        run(_async_create_device(hass, FakeCall(
+            device_name="Same", entities=[{"platform": "switch", "name": "Second"}])))
+
+    assert run(load_devices(str(tmp_path / "virtual.yaml")))["Same"][0]["name"] == "First"
+
+
+def test_cloning_the_same_device_twice_keeps_both(monkeypatch, tmp_path):
+    """The second clone used to replace the first, because both took the default
+    name, and the earlier one was gone without a word."""
+    monkeypatch.setattr(clone_module, "build_clone_spec", _thermostat)
+    hass, _entry = _loaded_bench(tmp_path)
+
+    run(clone_module._async_clone_device(hass, FakeCall(device_id="x")))
+    run(clone_module._async_clone_device(hass, FakeCall(device_id="x")))
+
+    devices = run(load_devices(str(tmp_path / "virtual.yaml")))
+    assert sorted(devices) == ["Test — Thermo", "Test — Thermo (2)"]
+    # every entity is qualified with ITS device's name, whatever that turned out to be
+    assert devices["Test — Thermo (2)"][0]["name"] == "Test — Thermo (2) Power"
+    assert devices["Test — Thermo"][0]["name"] == "Test — Thermo Power"
+
+
+def test_a_name_the_user_chose_is_never_replaced_or_renumbered(monkeypatch, tmp_path):
+    monkeypatch.setattr(clone_module, "build_clone_spec", _thermostat)
+    hass, _entry = _loaded_bench(tmp_path)
+    run(clone_module._async_clone_device(hass, FakeCall(device_id="x", device_name="Mine")))
+
+    with pytest.raises(ServiceValidationError, match="Mine"):
+        run(clone_module._async_clone_device(hass, FakeCall(device_id="x", device_name="Mine")))
+
+    assert list(run(load_devices(str(tmp_path / "virtual.yaml")))) == ["Mine"]
+
+
+# --- setup, clone and groups: the other doors to the same guards ---------------
+
+
+def test_a_damaged_identity_file_stops_the_group_loading(tmp_path):
+    """The error has to reach Home Assistant as 'not ready', before any device is
+    made or any registry row removed. Calling the loader alone proves neither."""
+    hass = FakeHass(config_dir=tmp_path)
+    meta = pathlib.Path(hass.config.path(".storage/virtual.meta.json"))
+    meta.write_text("{broken")
+    devices = tmp_path / "virtual.yaml"
+    devices.write_text("devices:\n  A:\n    - {platform: switch, name: A}\n")
+
+    with pytest.raises(ConfigEntryNotReady, match="damaged"):
+        run(async_setup_entry(hass, FakeEntry(devices)))
+
+    assert meta.read_text() == "{broken", "the damaged file was overwritten"
+    assert GROUP not in hass.data.get(COMPONENT_DOMAIN, {})
+
+
+def test_cloning_an_entry_the_platform_would_reject_is_refused(monkeypatch, tmp_path):
+    """Bad-entry refusal was only proved through create_device; the clone path
+    has its own call to the check."""
+    monkeypatch.setattr(clone_module, "build_clone_spec", lambda *a: (
+        "Thermo", [{"platform": "number", "name": "Level"}]))  # a number with no range
+    hass, _entry = _loaded_bench(tmp_path)
+
+    with pytest.raises(ServiceValidationError, match="would not load"):
+        run(clone_module._async_clone_device(hass, FakeCall(device_id="x")))
+
+    assert not (tmp_path / "virtual.yaml").exists()
+    assert hass.config_entries.reloads == 0
+
+
+def test_an_entry_with_no_name_is_still_accepted(tmp_path):
+    """The loader names it from its device; only the schema cannot know that."""
+    hass, _entry = _loaded_bench(tmp_path)
+    run(check_entries(hass, [{"platform": "switch"}]))
+
+
+def test_a_deliberately_emptied_file_still_takes_a_new_device(tmp_path):
+    """`devices: {}` says 'no devices' on purpose, even while the group is running;
+    only a file that is MISSING is refused."""
+    hass, entry = _loaded_bench(tmp_path)
+    hass.data[COMPONENT_DOMAIN][GROUP]["devices"] = [{"device_id": "Old"}]
+    (tmp_path / "virtual.yaml").write_text("devices: {}\n")
+
+    run(_mutate_and_reload(hass, entry, "create", lambda d: d.update({"New": []})))
+
+    assert list(run(load_devices(str(tmp_path / "virtual.yaml")))) == ["New"]
+
+
+def test_two_groups_reload_independently(tmp_path):
+    """The lock, the waiting count and the dirty mark are all per group, so two
+    groups changed at once each get their own reload and neither blocks the other."""
+    hass = FakeHass(config_dir=tmp_path)
+    first = FakeEntry(tmp_path / "a.yaml", group_name="A", entry_id="e-a")
+    second = FakeEntry(tmp_path / "b.yaml", group_name="B", entry_id="e-b")
+
+    async def go():
+        await asyncio.gather(
+            _mutate_and_reload(hass, first, "create", lambda d: d.update({"X": []})),
+            _mutate_and_reload(hass, second, "create", lambda d: d.update({"Y": []})))
+
+    run(go())
+    assert hass.config_entries.reloads == 2
+    assert list(run(load_devices(str(tmp_path / "a.yaml")))) == ["X"]
+    assert list(run(load_devices(str(tmp_path / "b.yaml")))) == ["Y"]

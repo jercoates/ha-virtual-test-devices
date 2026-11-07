@@ -263,7 +263,7 @@ def test_every_platform_can_be_cloned():
     # A Hubitat-bridged LOCK, attributes exactly as HA reports them.
     ("lock", {"supported_features": 1, "code_format": r"\d{4}",
               "codes": {"1": {"name": "Jeremy"}, "2": {"name": "Thea"}},
-              "last_code_name": "Jeremy", "code_length": 4, "max_codes": 30}),
+              "last_code_name": "Jeremy", "last_code": "4821", "code_length": 4, "max_codes": 30}),
     # A Hubitat-bridged ALARM PANEL — this one carries plaintext PINs.
     ("alarm_control_panel", {"supported_features": 7, "code_format": "number",
                              "code_arm_required": False,
@@ -280,7 +280,7 @@ def test_clone_never_captures_codes_or_household_names(domain, attrs):
     to reckon with this test.
     """
     spec = repr(clone.capability_config(HASS, domain, attrs))
-    for secret in ("Jeremy", "Thea", "2217", "codes", "last_code_name"):
+    for secret in ("Jeremy", "Thea", "2217", "4821", "codes", "last_code"):
         assert secret not in spec, f"{domain} clone leaked {secret!r}: {spec}"
 
 

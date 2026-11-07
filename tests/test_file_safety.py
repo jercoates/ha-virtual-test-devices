@@ -10,14 +10,19 @@ These tests fail if a save can ever damage an existing file, or if an unreadable
 file can take the integration down again.
 """
 
+import logging
+
 import pytest
 
-from conftest import run
+from conftest import FakeEntry, FakeHass, load_devices, run
 
 from custom_components.virtual.cfg import (
+    BlendedCfg,
+    MetaFileError,
+    _async_load_json,
     _async_load_yaml,
+    _async_read_user_file,
     _async_save_yaml,
-    _load_user_data,
     _save_user_data,
 )
 
@@ -53,23 +58,23 @@ def test_empty_file_degrades_to_no_devices(tmp_path):
     """An empty file parses to None, and `.get` on it used to kill setup."""
     path = tmp_path / "virtual.yaml"
     path.write_text("", encoding="utf-8")
-    assert run(_load_user_data(str(path))) == {}
+    assert run(load_devices(str(path))) == {}
 
 
 def test_unparseable_file_degrades_to_no_devices(tmp_path):
     path = tmp_path / "virtual.yaml"
     path.write_text("devices:\n  - [unclosed\n   bad: : :\n", encoding="utf-8")
-    assert run(_load_user_data(str(path))) == {}
+    assert run(load_devices(str(path))) == {}
 
 
 def test_non_mapping_file_degrades_to_no_devices(tmp_path):
     path = tmp_path / "virtual.yaml"
     path.write_text("just a bare string\n", encoding="utf-8")
-    assert run(_load_user_data(str(path))) == {}
+    assert run(load_devices(str(path))) == {}
 
 
 def test_missing_file_degrades_to_no_devices(tmp_path):
-    assert run(_load_user_data(str(tmp_path / "does-not-exist.yaml"))) == {}
+    assert run(load_devices(str(tmp_path / "does-not-exist.yaml"))) == {}
 
 
 def test_round_trip_preserves_devices(tmp_path):
@@ -83,7 +88,7 @@ def test_round_trip_preserves_devices(tmp_path):
                      "source_list": ["Line-in", "Radio"]}],
     }
     run(_save_user_data(path, devices))
-    assert run(_load_user_data(path)) == devices
+    assert run(load_devices(path)) == devices
 
 
 def test_no_temp_file_is_left_behind(tmp_path):
@@ -92,3 +97,63 @@ def test_no_temp_file_is_left_behind(tmp_path):
     run(_save_user_data(str(path), {"A": [{"platform": "switch", "name": "A"}]}))
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert not leftovers, leftovers
+
+
+# --- the identity (meta) file ------------------------------------------------
+
+
+def test_a_missing_identity_file_is_a_new_install(tmp_path):
+    assert run(_async_load_json(str(tmp_path / "virtual.meta.json"))) == {}
+
+
+@pytest.mark.parametrize("damage", ["", "{not json", "[1, 2]"])
+def test_a_damaged_identity_file_is_an_error_not_empty(tmp_path, damage):
+    """Read as empty, every entity looks new and gets a fresh unique id, the old
+    registry rows are removed as orphans, and the damaged file is overwritten."""
+    path = tmp_path / "virtual.meta.json"
+    path.write_text(damage)
+    with pytest.raises(MetaFileError):
+        run(_async_load_json(str(path)))
+    assert path.read_text() == damage
+
+
+# --- what the reader believes -------------------------------------------------
+
+@pytest.mark.parametrize("text, expected", [
+    ("devices:\n", ({}, True)),               # left empty: no devices, believable
+    ("devices: {}\n", ({}, True)),            # the deliberate way to say it
+    ("version: 1\n", ({}, True)),             # a marker alone is not a device
+    ("devices: [a, b]\n", ({}, False)),       # not a mapping: not believable
+])
+def test_what_the_reader_believes(tmp_path, text, expected):
+    path = tmp_path / "virtual.yaml"
+    path.write_text(text)
+    assert run(_async_read_user_file(str(path))) == expected
+
+
+def test_an_empty_file_is_not_believed_and_says_so(tmp_path, caplog):
+    """It used to be refused with 'see the log' and nothing in the log."""
+    path = tmp_path / "virtual.yaml"
+    path.write_text("")
+    with caplog.at_level(logging.WARNING):
+        assert run(_async_read_user_file(str(path))) == ({}, False)
+    assert "is empty" in caplog.text and "devices: {}" in caplog.text
+
+
+def test_the_loader_knows_a_file_is_missing_as_opposed_to_unreadable(tmp_path):
+    """The orphan guard rests on this being computed, not on a stub saying so."""
+    path = tmp_path / "virtual.yaml"
+
+    missing = BlendedCfg(FakeHass(config_dir=tmp_path), FakeEntry(path).data)
+    run(missing.async_load())
+    assert missing.file_missing and missing.trusted
+
+    path.write_text("devices: {}\n")
+    present = BlendedCfg(FakeHass(config_dir=tmp_path), FakeEntry(path).data)
+    run(present.async_load())
+    assert not present.file_missing
+
+    path.write_text("")
+    blank = BlendedCfg(FakeHass(config_dir=tmp_path), FakeEntry(path).data)
+    run(blank.async_load())
+    assert not blank.file_missing and not blank.trusted

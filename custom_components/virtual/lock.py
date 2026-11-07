@@ -103,11 +103,34 @@ class VirtualLock(VirtualEntity, LockEntity):
         super()._create_state(config)
 
         self._attr_is_locked = config.get(CONF_INITIAL_VALUE).lower() == LockState.LOCKED
+        self._last_code = None
+        self._sequence = 0
 
     def _restore_state(self, state, config):
         super()._restore_state(state, config)
 
         self._attr_is_locked = state.state == LockState.LOCKED
+        self._last_code = None
+        self._sequence = 0
+
+    def _update_attributes(self):
+        super()._update_attributes()
+        # The code the last lock/unlock was sent with (None when it was sent none), so
+        # an automation that reacts to a code being used can be tested without a keypad.
+        # It is whatever the caller typed: use made-up test codes, because this lands in
+        # the state and so in Home Assistant's history.
+        self._attr_extra_state_attributes["last_code"] = getattr(self, "_last_code", None)
+        # Counts every lock/unlock/open received. A real keypad fires on EVERY entry; here
+        # a second use of the same code on a lock already in that state changes nothing
+        # Home Assistant can see, so an automation waiting for it would never run. The
+        # count changes each time, so each use is a state change.
+        self._attr_extra_state_attributes["sequence"] = getattr(self, "_sequence", 0)
+
+    def _remember_code(self, kwargs) -> None:
+        code = kwargs.get("code")
+        self._last_code = None if code is None else str(code)
+        self._sequence = getattr(self, "_sequence", 0) + 1
+        self._update_attributes()
 
     def _lock(self) -> None:
         if self._test_jamming == 0 or random.randint(0, self._test_jamming) > 0:
@@ -157,6 +180,7 @@ class VirtualLock(VirtualEntity, LockEntity):
         async_call_later(self.hass, self._change_time, self._finish_operation)
 
     async def async_lock(self, **kwargs: Any) -> None:
+        self._remember_code(kwargs)
         if self._change_time == DEFAULT_CHANGE_TIME:
             self._lock()
         else:
@@ -164,6 +188,7 @@ class VirtualLock(VirtualEntity, LockEntity):
             self._start_operation()
 
     async def async_unlock(self, **kwargs: Any) -> None:
+        self._remember_code(kwargs)
         if self._change_time == DEFAULT_CHANGE_TIME:
             self._unlock()
         else:

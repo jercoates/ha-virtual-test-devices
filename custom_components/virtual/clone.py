@@ -51,14 +51,20 @@ from enum import Enum
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.exceptions import ServiceValidationError
 import homeassistant.helpers.config_validation as cv
 import homeassistant.helpers.device_registry as dr
 import homeassistant.helpers.entity_registry as er
 
 from .cfg import unique_in_device
 from .const import COMPONENT_DOMAIN, ATTR_GROUP_NAME
-from .pistoncore_manage import _find_entry, _mutate_and_reload
+from .pistoncore_manage import (
+    _find_entry,
+    _mutate_and_reload,
+    check_entries,
+    free_device_name,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -357,7 +363,8 @@ async def _async_clone_device(hass: HomeAssistant, call) -> None:
         hass, call.data[CONF_DEVICE_ID], call.data.get(CONF_NOTIFY_AS),
         call.data.get(CONF_ADD_NOTIFIER, False))
 
-    name = call.data.get(CONF_DEVICE_NAME) or (
+    chosen = call.data.get(CONF_DEVICE_NAME)
+    name = chosen or (
         label if label.lower().startswith("test") else f"Test — {label}")
 
     # QUALIFY EVERY ENTITY WITH THE DEVICE NAME. This is not cosmetic: this
@@ -369,15 +376,29 @@ async def _async_clone_device(hass: HomeAssistant, call) -> None:
     # Capability-only names collide easily ("Battery", "Automatic backup"),
     # so the device name has to be part of it — which is also what the base
     # integration does when it names entities itself.
-    for spec in specs:
-        capability = spec["name"]
-        spec["name"] = f"{name} {capability}".strip() if capability else name
+    capabilities = [spec["name"] for spec in specs]
+
+    def _qualified(device_name):
+        return [{**spec, "name": f"{device_name} {capability}".strip()
+                 if capability else device_name}
+                for spec, capability in zip(specs, capabilities)]
+
+    # Checked as they will be written, before anything is.
+    await check_entries(hass, _qualified(name))
 
     def _add(devices):
-        devices[name] = specs
+        # A name the user CHOSE that is already taken is an error; a default name
+        # just takes the next free one. Replacing the earlier clone in silence is
+        # what happened here before, and cloning the same device twice lost it.
+        if chosen and name in devices:
+            raise ServiceValidationError(
+                f"virtual: group '{entry.data.get(ATTR_GROUP_NAME)}' already has a "
+                f"device called '{name}'. Choose another name, or remove it first.")
+        final = free_device_name(devices, name)
+        devices[final] = _qualified(final)
+        _LOGGER.info("virtual: cloning '%s' as '%s' (%d entities)",
+                     label, final, len(specs))
 
-    _LOGGER.info("virtual: cloning '%s' as '%s' (%d entities)",
-                 label, name, len(specs))
     await _mutate_and_reload(hass, entry, f"cloned '{label}' as '{name}'", _add)
 
 
@@ -408,11 +429,14 @@ def async_register_clone_service(hass: HomeAssistant) -> None:
     async def describe_device(call):
         return await _async_describe_device(hass, call)
 
-    hass.services.async_register(
-        COMPONENT_DOMAIN, SERVICE_CLONE_DEVICE, clone_device,
+    # ADMIN services: they change a group's file, and describe_device returns a
+    # real device's whole capability spec. A non-admin user could otherwise call
+    # them over the websocket. Automations and scripts (no user) are unaffected.
+    async_register_admin_service(
+        hass, COMPONENT_DOMAIN, SERVICE_CLONE_DEVICE, clone_device,
         schema=CLONE_DEVICE_SCHEMA)
-    hass.services.async_register(
-        COMPONENT_DOMAIN, SERVICE_DESCRIBE_DEVICE, describe_device,
+    async_register_admin_service(
+        hass, COMPONENT_DOMAIN, SERVICE_DESCRIBE_DEVICE, describe_device,
         schema=DESCRIBE_DEVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY)
     _LOGGER.debug("virtual: registered clone_device/describe_device")

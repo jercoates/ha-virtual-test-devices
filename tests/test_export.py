@@ -117,7 +117,7 @@ def test_persistent_is_only_written_when_it_was_asked_for():
 # ── what a copy must NEVER carry ────────────────────────────────────────────
 
 SECRETS = {"codes": {"1": {"name": "Bob", "code": "4821"}}, "last_code_name": "Bob",
-           "code": "4821", "pin": "4821", "changed_by": "Bob"}
+           "code": "4821", "pin": "4821", "changed_by": "Bob", "last_code": "1234", "sequence": 9}
 
 
 @pytest.mark.parametrize("domain", ["lock", "alarm_control_panel"])
@@ -125,8 +125,8 @@ def test_no_code_name_or_pin_survives_for_locks_and_alarm_panels(domain):
     e = entry_for(f"{domain}.front", "locked", supported_features=1,
                   code_format="number", **SECRETS)
     text = json.dumps(e)
-    assert "4821" not in text and "Bob" not in text
-    assert not {"codes", "last_code_name", "code", "pin", "changed_by"} & set(e)
+    assert "4821" not in text and "Bob" not in text and "1234" not in text
+    assert not {"codes", "last_code_name", "code", "pin", "changed_by", "last_code", "sequence"} & set(e)
 
 
 # ── the file must load ──────────────────────────────────────────────────────
@@ -380,3 +380,57 @@ def test_awkward_names_and_states_survive_the_file_unchanged(monkeypatch, tmp_pa
         assert got["name"] == value, (value, got["name"])
         assert got["initial_value"] == value, (value, got["initial_value"])
     assert loader.devices[0]["name"] == "yes"
+
+
+# --- where an export may write ----------------------------------------------
+
+def test_an_export_will_not_overwrite_a_file_it_did_not_write(tmp_path, schemas):
+    """Anywhere in the config folder used to be fair game, so a typo could replace
+    configuration.yaml or secrets.yaml with an export."""
+    from homeassistant.exceptions import ServiceValidationError
+    existing = tmp_path / "configuration.yaml"
+    existing.write_text("homeassistant:\n  name: Home\n")
+    hass = WritingHass(tmp_path)
+
+    with pytest.raises(ServiceValidationError, match="not written by an export"):
+        run(export._async_export_devices(hass, call(file="configuration.yaml")))
+
+    assert existing.read_text() == "homeassistant:\n  name: Home\n"
+
+
+def test_an_export_will_not_overwrite_a_groups_own_devices_file(tmp_path, schemas):
+    """The group's file looks like an export once an export has been loaded as a
+    group, and a UI that offers a default file name could point straight at it."""
+    from homeassistant.exceptions import ServiceValidationError
+    group_file = tmp_path / "virtual.yaml"
+    group_file.write_text(export.EXPORT_MARK + " (a loaded export)\ndevices: {}\n")
+    hass = WritingHass(tmp_path)
+    hass.config_entries.entries = [FakeEntry(group_file)]
+
+    with pytest.raises(ServiceValidationError, match="group's own"):
+        run(export._async_export_devices(hass, call(file="virtual.yaml")))
+
+    assert group_file.read_text().startswith(export.EXPORT_MARK + " (a loaded")
+
+
+def test_an_export_may_replace_its_own_earlier_output_and_make_a_new_file(tmp_path):
+    """The controls: refusing everything would make the action useless."""
+    earlier = tmp_path / "virtual_export.yaml"
+    earlier.write_text(export.EXPORT_MARK + " 0.14.0\ndevices: {}\n")
+    assert export._refusal(str(earlier), []) is None
+    assert export._refusal(str(tmp_path / "brand_new.yaml"), []) is None
+
+
+def test_a_link_to_a_groups_devices_file_is_that_file(tmp_path):
+    """The group check is the only thing protecting a group file that is itself an
+    export (it starts with the same line), so a link to it must count as it."""
+    import os
+    group_file = tmp_path / "virtual.yaml"
+    group_file.write_text(export.EXPORT_MARK + " (a loaded export)\n")
+    link = tmp_path / "shortcut.yaml"
+    try:
+        os.symlink(group_file, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("this system cannot make symbolic links")
+
+    assert export._refusal(str(link), [str(group_file)]) == "that is a group's own devices file"

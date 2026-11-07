@@ -62,17 +62,32 @@ def _fix_value(value):
     return value
 
 
+class MetaFileError(Exception):
+    """The identity (meta) file exists but could not be read.
+
+    A missing file is a new install and reads as empty. A file that is there and
+    unreadable is NOT the same: reading it as empty makes every entity look new,
+    each gets a fresh unique id, the old registry rows are then removed as
+    orphans (their history, area and customisations with them), and the damaged
+    file is overwritten. So it stops the group loading instead.
+    """
+
+
 async def _async_load_json(file_name):
-    _LOGGER.debug("_async_load_yaml1 file_name for %s", file_name)
     try:
         async with aiofiles.open(file_name, 'r') as meta_file:
-            _LOGGER.debug("_async_load_yaml2 file_name for %s", file_name)
             contents = await meta_file.read()
-            _LOGGER.debug("_async_load_yaml3 file_name for %s", file_name)
-            return json.loads(contents)
-    except Exception as e:
-        _LOGGER.debug("_async_load_yaml3 file_name for %s", file_name)
+    except FileNotFoundError:
         return {}
+    except Exception as err:
+        raise MetaFileError(f"could not read {file_name}: {err}") from err
+    try:
+        data = json.loads(contents)
+    except ValueError as err:
+        raise MetaFileError(f"{file_name} is not valid json: {err}") from err
+    if not isinstance(data, dict):
+        raise MetaFileError(f"{file_name} is not a json object")
+    return data
 
 
 async def _atomic_write(file_name, text):
@@ -217,16 +232,27 @@ async def _async_read_user_file(file_name):
                         "leaving the registry alone", file_name, err)
         return {}, False
     if not isinstance(parsed, dict):
-        if parsed is not None:
+        if parsed is None:
+            _LOGGER.warning("virtual: %s is empty. Nothing is changed or removed "
+                            "while it is; put `devices: {}` in it to start a "
+                            "group with no devices.", file_name)
+        else:
             _LOGGER.warning("virtual: %s is not a mapping; ignoring it", file_name)
         return {}, False
-    # make devices: optional.
-    return parsed.get(ATTR_DEVICES, parsed), True
-
-
-async def _load_user_data(file_name):
-    devices, _trustworthy = await _async_read_user_file(file_name)
-    return devices
+    # `devices:` is optional: a bare mapping of devices is read as one. Its
+    # `version` marker is not a device, and a `devices:` left empty is "no
+    # devices", not a reason to hand the caller a None to trip over.
+    if ATTR_DEVICES in parsed:
+        devices = parsed[ATTR_DEVICES]
+    else:
+        devices = {k: v for k, v in parsed.items() if k != ATTR_VERSION}
+    if devices is None:
+        devices = {}
+    if not isinstance(devices, dict):
+        _LOGGER.warning("virtual: the devices in %s are not a mapping; ignoring "
+                        "them", file_name)
+        return {}, False
+    return devices, True
 
 
 def _fix_config(config):
@@ -415,12 +441,15 @@ class BlendedCfg(object):
         # say-so: False for an unreadable file or when entries were rejected. See
         # `trusted`.
         self._file_ok = True
+        self._file_missing = False
         self._rejected = 0
         self._devices = []
         self._entities = {}
 
     async def async_load(self):
         meta_data = await _load_meta_data(self._hass, self._group_name)
+        self._file_missing = not await asyncio.get_running_loop().run_in_executor(
+            None, os.path.exists, self._file_name)
         devices, self._file_ok = await _async_read_user_file(self._file_name)
         changed = False
 
@@ -538,6 +567,11 @@ class BlendedCfg(object):
     @property
     def entities(self):
         return self._entities
+
+    @property
+    def file_missing(self):
+        """The devices file was not there at all (as opposed to unreadable)."""
+        return self._file_missing
 
     @property
     def trusted(self):

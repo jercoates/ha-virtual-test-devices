@@ -61,6 +61,11 @@ _LOGGER = logging.getLogger(__name__)
 DEPENDENCIES = [COMPONENT_DOMAIN]
 
 IMAGE_DIR = Path(__file__).parent / "images"
+# A short clip, not a live feed: HA reads a file source as fast as it can, so a
+# recording is the clip once (~22 s) whatever duration was asked for, and live
+# view plays it through and stops. Looping it (a playlist repeating the clip)
+# was tried and made a 10 s recording 46 MB, so it is deliberately not done.
+VIDEO_FILE = Path(__file__).parent / "video" / "camera_clip.mp4"
 
 # A camera has no on/off state to restore; initial_value is unused but
 # virtual_schema wants a default, same as the button platform.
@@ -81,22 +86,25 @@ async def async_setup_platform(
         async_add_entities: AddEntitiesCallback,
         _discovery_info: DiscoveryInfoType | None = None) -> None:
     if hass.data[COMPONENT_CONFIG].get(CONF_YAML_CONFIG, False):
-        async_add_entities([VirtualCamera(config, True)], True)
+        frames = await hass.async_add_executor_job(_frames)
+        async_add_entities([VirtualCamera(config, True, frames)], True)
 
 
 async def async_setup_entry(
         hass: HomeAssistant, entry: ConfigEntry,
         async_add_entities: Callable[[list], None]) -> None:
     entities = []
+    # Listing the folder is disk work, so it is done once, off the event loop.
+    frames = await hass.async_add_executor_job(_frames)
     for entity in get_entity_configs(hass, entry.data[ATTR_GROUP_NAME], PLATFORM_DOMAIN):
-        entities.append(VirtualCamera(CAMERA_SCHEMA(entity), False))
+        entities.append(VirtualCamera(CAMERA_SCHEMA(entity), False, frames))
     async_add_entities(entities)
 
 
 class VirtualCamera(VirtualEntity, Camera):
     """Representation of a Virtual camera."""
 
-    def __init__(self, config, old_style: bool):
+    def __init__(self, config, old_style: bool, frames: list[Path] | None = None):
         # Camera has real initialisation of its own (image cache, stream
         # bookkeeping); VirtualEntity's __init__ doesn't chain to it, so it is
         # called explicitly. Omitting it leaves the entity half-built and it
@@ -107,13 +115,16 @@ class VirtualCamera(VirtualEntity, Camera):
 
         self._attr_supported_features = feature_flags(
             config, CameraEntityFeature, CameraEntityFeature(0))
-        # There is no video here, only stills. A cloned camera may well have
-        # advertised STREAM, but declaring it would put a live-view button in
-        # the UI that fails the moment it is pressed — the same reason
-        # media_player drops BROWSE_MEDIA and SEARCH_MEDIA from a clone.
+        # Live view is offered only while the bundled clip is there. Declaring
+        # STREAM with no video behind it would put a live-view button in the
+        # UI that fails the moment it is pressed — the same reason
+        # media_player drops BROWSE_MEDIA and SEARCH_MEDIA from a clone. So a
+        # clone's own STREAM flag is dropped and re-added only on the clip.
         self._attr_supported_features &= ~CameraEntityFeature.STREAM
+        if VIDEO_FILE.is_file():
+            self._attr_supported_features |= CameraEntityFeature.STREAM
 
-        self._frames = _frames()
+        self._frames = _frames() if frames is None else list(frames)
         self._index = 0
         self._last_frame: str | None = None
         if not self._frames:
@@ -159,6 +170,10 @@ class VirtualCamera(VirtualEntity, Camera):
         if self.hass is not None and self.entity_id:
             self.async_write_ha_state()
         return image
+
+    async def stream_source(self) -> str | None:
+        """The bundled clip, for HA's own stream feature to play."""
+        return str(VIDEO_FILE) if VIDEO_FILE.is_file() else None
 
     def _update_attributes(self):
         super()._update_attributes()

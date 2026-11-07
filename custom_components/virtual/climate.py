@@ -52,6 +52,14 @@ DEPENDENCIES = [COMPONENT_DOMAIN]
 
 DEFAULT_CLIMATE_VALUE = "heat"  # initial hvac mode
 
+# Home Assistant 2026.11 renamed the thermostat's temperature unit
+# (`_attr_temperature_unit` -> `_attr_native_temperature_unit`) and warns about
+# the old name; 2026.10 and earlier only know the old one. Use whichever the
+# installed Home Assistant understands, so neither version warns or loses the unit.
+_UNIT_ATTR = ("_attr_native_temperature_unit"
+              if hasattr(ClimateEntity, "native_temperature_unit")
+              else "_attr_temperature_unit")
+
 CONF_HVAC_MODES = "hvac_modes"
 CONF_PRESET_MODES = "preset_modes"
 CONF_FAN_MODES = "fan_modes"
@@ -145,10 +153,10 @@ class VirtualClimate(VirtualEntity, ClimateEntity):
     plain single-setpoint heater, so a clone of it was not a clone.
     """
 
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
-
     def __init__(self, config, old_style: bool):
         super().__init__(config, PLATFORM_DOMAIN, old_style)
+
+        setattr(self, _UNIT_ATTR, UnitOfTemperature.CELSIUS)
 
         self._attr_supported_features = feature_flags(
             config, ClimateEntityFeature, DEFAULT_FEATURES)
@@ -182,9 +190,9 @@ class VirtualClimate(VirtualEntity, ClimateEntity):
         if (unit := config.get(CONF_TEMPERATURE_UNIT)) is not None:
             # Cloned limits arrive in whatever unit HA reports them in, so the
             # clone has to declare that same unit or HA converts them twice.
-            self._attr_temperature_unit = (
+            setattr(self, _UNIT_ATTR, (
                 UnitOfTemperature.FAHRENHEIT if "F" in unit.upper()
-                else UnitOfTemperature.CELSIUS)
+                else UnitOfTemperature.CELSIUS))
         for attr, key in (("_attr_min_temp", CONF_MIN_TEMP),
                           ("_attr_max_temp", CONF_MAX_TEMP),
                           ("_attr_target_temperature_step", CONF_TARGET_TEMP_STEP),
@@ -204,7 +212,7 @@ class VirtualClimate(VirtualEntity, ClimateEntity):
         """A starting setpoint inside this thermostat's own limits — 21°C is
         outside the range of a Fahrenheit clone."""
         low, high = self.min_temp, self.max_temp
-        default = 21.0 if self.temperature_unit == UnitOfTemperature.CELSIUS else 70.0
+        default = 21.0 if getattr(self, _UNIT_ATTR) == UnitOfTemperature.CELSIUS else 70.0
         return default if low <= default <= high else round((low + high) / 2, 1)
 
     def _create_state(self, config):

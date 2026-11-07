@@ -30,6 +30,12 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def load_devices(file_name):
+    """The devices a group's file lists, as the integration reads them."""
+    from custom_components.virtual.cfg import _async_read_user_file
+    return (await _async_read_user_file(file_name))[0]
+
+
 class FakeConfigEntries:
     """Counts reloads, so a test can prove a burst collapses into one."""
 
@@ -77,6 +83,9 @@ class FakeHass:
         self.config_entries = FakeConfigEntries()
         # Only the tests that load a group's config need this.
         self.config = FakeConfig(config_dir) if config_dir else None
+
+    async def async_add_executor_job(self, func, *args):
+        return func(*args)
 
 
 class FakeEntry:

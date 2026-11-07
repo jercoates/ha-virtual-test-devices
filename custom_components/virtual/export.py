@@ -38,9 +38,11 @@ thing the integration provides on that Home Assistant: no groups, no entities, n
 create or clone. That is the way to run it on a Home Assistant you care about.
 """
 
+import asyncio
 import fnmatch
 import importlib
 import logging
+import os
 import pathlib
 from collections import Counter
 
@@ -59,6 +61,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, SupportsResponse, callback
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.util import dt as dt_util
 from homeassistant.util.yaml import dump
 
@@ -179,9 +182,12 @@ def _entity_entry(hass: HomeAssistant, row, state, persistent) -> dict:
 
 def _problem(entry: dict, schemas: dict):
     """None if the entry's platform would accept it, else why it would not."""
+    schema = schemas.get(entry.get(CONF_PLATFORM))
+    if schema is None:
+        return f"{entry.get(CONF_PLATFORM)!r} is not a platform this integration provides"
     body = {k: v for k, v in entry.items() if k != CONF_PLATFORM}  # cfg pops it first
     try:
-        schemas[entry[CONF_PLATFORM]](body)
+        schema(body)
     except vol.Invalid as err:
         return str(err)
     return None
@@ -292,8 +298,16 @@ def _report(skipped: list) -> list:
     return report
 
 
+# What every export starts with, which is also how a later export knows a file is
+# one of its own and may be replaced.
+EXPORT_MARK = "# Exported by Virtual Test Devices"
+
+# One export at a time: they all write through the same temp name.
+_EXPORT_LOCK = asyncio.Lock()
+
+
 def _header() -> str:
-    return (f"# Exported by Virtual Test Devices {__version__} from Home Assistant "
+    return (f"{EXPORT_MARK} {__version__} from Home Assistant "
             f"{HA_VERSION} on {dt_util.now().isoformat(timespec='seconds')}.\n"
             "# Load this as a virtual group's devices file on another Home Assistant:\n"
             "# every entity keeps the id it has here.\n")
@@ -321,11 +335,45 @@ def _may_write(hass: HomeAssistant, path: str) -> bool:
     return hass.config.is_allowed_path(path)
 
 
+def _refusal(path: str, group_files: list):
+    """Why an export may not replace `path`, or None if it may.
+
+    An export only ever replaces its own earlier output. Anywhere in the config
+    folder used to be fair game, so a typo (or a UI that offered the group's own
+    file as the default) could overwrite configuration.yaml, secrets.yaml or a
+    group's devices file with an export. Does blocking I/O: executor only."""
+    def same(name):
+        # Resolve links and ignore case where the filesystem does: a link to a
+        # group's file, or the same name spelled differently, is that file.
+        return os.path.normcase(os.path.realpath(name))
+
+    target = same(path)
+    if any(same(name) == target for name in group_files):
+        return "that is a group's own devices file"
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            head = handle.read(len(EXPORT_MARK))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as err:
+        return f"it exists and could not be read ({err})"
+    if head != EXPORT_MARK:
+        return "it already exists and was not written by an export"
+    return None
+
+
 async def _async_export_devices(hass: HomeAssistant, call) -> dict:
     path = hass.config.path(call.data.get(CONF_FILE) or DEFAULT_FILE)
     if not await hass.async_add_executor_job(_may_write, hass, path):
         raise ServiceValidationError(
             f"virtual: {path} is outside the config folder and allowlist_external_dirs")
+    group_files = [entry.data.get(ATTR_FILE_NAME) for entry in
+                   hass.config_entries.async_entries(COMPONENT_DOMAIN)
+                   if entry.data.get(ATTR_FILE_NAME)]
+    refusal = await hass.async_add_executor_job(_refusal, path, group_files)
+    if refusal:
+        raise ServiceValidationError(
+            f"virtual: not exporting to {path}: {refusal}. Choose another file name.")
 
     schemas = await hass.async_add_executor_job(load_platform_schemas)
     devices, skipped = _collect(hass, call.data, schemas)
@@ -333,7 +381,8 @@ async def _async_export_devices(hass: HomeAssistant, call) -> dict:
     # Serialise first, then write atomically: a value yaml cannot represent raises
     # here with any existing file still intact (see cfg._atomic_write).
     body = _header() + dump({ATTR_VERSION: 1, ATTR_DEVICES: devices}) + _report_comment(report)
-    await _atomic_write(path, body)
+    async with _EXPORT_LOCK:
+        await _atomic_write(path, body)
 
     count = sum(len(d[ATTR_ENTITIES]) for d in devices.values())
     _LOGGER.info("virtual: exported %d entities in %d devices to %s (%d skipped)",
@@ -351,7 +400,8 @@ def async_register_export_service(hass: HomeAssistant) -> None:
     async def export_devices(call):
         return await _async_export_devices(hass, call)
 
-    hass.services.async_register(
-        COMPONENT_DOMAIN, SERVICE_EXPORT_DEVICES, export_devices,
+    # Admin only: it writes a file into the config folder and reads every device.
+    async_register_admin_service(
+        hass, COMPONENT_DOMAIN, SERVICE_EXPORT_DEVICES, export_devices,
         schema=EXPORT_SCHEMA, supports_response=SupportsResponse.OPTIONAL)
     _LOGGER.debug("virtual: registered export_devices")

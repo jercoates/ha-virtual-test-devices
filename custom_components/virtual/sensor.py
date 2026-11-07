@@ -17,13 +17,12 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_DEVICE_CLASS,
     ATTR_UNIT_OF_MEASUREMENT,
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
-    CONCENTRATION_PARTS_PER_MILLION,
     CONF_UNIT_OF_MEASUREMENT,
     LIGHT_LUX,
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS,
     UnitOfApparentPower,
+    UnitOfDensity,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
@@ -31,6 +30,7 @@ from homeassistant.const import (
     UnitOfPower,
     UnitOfPressure,
     UnitOfReactivePower,
+    UnitOfRatio,
     UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant
@@ -75,19 +75,19 @@ SERVICE_SCHEMA = vol.Schema({
 UNITS_OF_MEASUREMENT = {
     SensorDeviceClass.APPARENT_POWER: UnitOfApparentPower.VOLT_AMPERE,  # apparent power (VA)
     SensorDeviceClass.BATTERY: PERCENTAGE,  # % of battery that is left
-    SensorDeviceClass.CO: CONCENTRATION_PARTS_PER_MILLION,  # ppm of CO concentration
-    SensorDeviceClass.CO2: CONCENTRATION_PARTS_PER_MILLION,  # ppm of CO2 concentration
+    SensorDeviceClass.CO: UnitOfRatio.PARTS_PER_MILLION,  # ppm of CO concentration
+    SensorDeviceClass.CO2: UnitOfRatio.PARTS_PER_MILLION,  # ppm of CO2 concentration
     SensorDeviceClass.HUMIDITY: PERCENTAGE,  # % of humidity in the air
     SensorDeviceClass.ILLUMINANCE: LIGHT_LUX,  # current light level (lx/lm)
-    SensorDeviceClass.NITROGEN_DIOXIDE: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen dioxide
-    SensorDeviceClass.NITROGEN_MONOXIDE: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen monoxide
-    SensorDeviceClass.NITROUS_OXIDE: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen oxide
-    SensorDeviceClass.OZONE: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of ozone
-    SensorDeviceClass.PM1: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM1
-    SensorDeviceClass.PM10: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM10
-    SensorDeviceClass.PM25: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM2.5
+    SensorDeviceClass.NITROGEN_DIOXIDE: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen dioxide
+    SensorDeviceClass.NITROGEN_MONOXIDE: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen monoxide
+    SensorDeviceClass.NITROUS_OXIDE: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of nitrogen oxide
+    SensorDeviceClass.OZONE: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of ozone
+    SensorDeviceClass.PM1: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM1
+    SensorDeviceClass.PM10: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM10
+    SensorDeviceClass.PM25: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of PM2.5
     SensorDeviceClass.SIGNAL_STRENGTH: SIGNAL_STRENGTH_DECIBELS,  # signal strength (dB/dBm)
-    SensorDeviceClass.SULPHUR_DIOXIDE: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of sulphur dioxide
+    SensorDeviceClass.SULPHUR_DIOXIDE: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of sulphur dioxide
     SensorDeviceClass.TEMPERATURE: "C",  # temperature (C/F)
     SensorDeviceClass.PRESSURE: UnitOfPressure.HPA,  # pressure (hPa/mbar)
     SensorDeviceClass.POWER: UnitOfPower.KILO_WATT,  # power (W/kW)
@@ -96,7 +96,7 @@ UNITS_OF_MEASUREMENT = {
     SensorDeviceClass.FREQUENCY: UnitOfFrequency.GIGAHERTZ,  # energy (Hz/kHz/MHz/GHz)
     SensorDeviceClass.POWER_FACTOR: PERCENTAGE,  # power factor (no unit, min: -1.0, max: 1.0)
     SensorDeviceClass.REACTIVE_POWER: UnitOfReactivePower.VOLT_AMPERE_REACTIVE,  # reactive power (var)
-    SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS: CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of vocs
+    SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS: UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,  # µg/m³ of vocs
     SensorDeviceClass.VOLTAGE: UnitOfElectricPotential.VOLT,  # voltage (V)
     SensorDeviceClass.GAS: UnitOfVolume.CUBIC_METERS,  # gas (m³)
 }
