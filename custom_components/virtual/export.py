@@ -66,6 +66,7 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util.yaml import dump
 
 from . import __version__
+from .bring_in import BringInError, RENAMES_SCHEMA, apply_renames, check_ids_unique, rekey
 from .cfg import _atomic_write
 from .clone import REPRODUCIBLE_DOMAINS, _plain, entity_spec
 from .const import *
@@ -80,6 +81,7 @@ CONF_EXCLUDE_ENTITIES = "exclude_entities"
 CONF_EXCLUDE_DEVICES = "exclude_devices"
 CONF_INCLUDE_DOMAINS = "include_domains"
 CONF_SKIP_HIDDEN = "skip_hidden"
+CONF_RENAMES = "renames"
 
 DEFAULT_FILE = "virtual_export.yaml"
 DEFAULT_EXCLUDE_INTEGRATIONS = ["hassio", "backup", "sun", "hacs", COMPONENT_DOMAIN]
@@ -94,6 +96,8 @@ EXPORT_SCHEMA = vol.Schema({
         vol.All(cv.ensure_list, [cv.string]),
     vol.Optional(CONF_PERSISTENT): cv.boolean,
     vol.Optional(CONF_SKIP_HIDDEN, default=False): cv.boolean,
+    # Names the person typed over at the review step: see bring_in.apply_renames.
+    vol.Optional(CONF_RENAMES, default=dict): RENAMES_SCHEMA,
 })
 
 # Each platform's OWN closed schema, so an exported entry is checked by exactly
@@ -310,17 +314,22 @@ def _header() -> str:
     return (f"{EXPORT_MARK} {__version__} from Home Assistant "
             f"{HA_VERSION} on {dt_util.now().isoformat(timespec='seconds')}.\n"
             "# Load this as a virtual group's devices file on another Home Assistant:\n"
-            "# every entity keeps the id it has here.\n")
+            "# every entity keeps the id it has here.\n"
+            "# It holds the real names and entity ids of the devices below, including any\n"
+            "# with a person's name in them. Read it before you share it.\n")
 
 
 def _report_comment(report: list) -> str:
+    """What was left out, as counts per reason. NOT by name: the person left a device out
+    because they did not want it in the file, and its name is exactly what they meant."""
     if not report:
         return "\n# Skipped: nothing.\n"
-    lines = ["", "# Skipped:"]
+    counts = Counter()
     for item in report:
-        what = (item.get(ATTR_ENTITY_ID) or item.get("device")
-                or f"{item['count']} x {item['domain']}.*")
-        lines.append(f"#   {what}: {item['reason']}")
+        counts[str(item["reason"]).splitlines()[0] if item["reason"] else "no reason given"] += (
+            item.get("count") or 1)
+    lines = ["", "# Skipped (names left out on purpose):"]
+    lines += [f"#   {count} x {reason}" for reason, count in sorted(counts.items())]
     return "\n".join(lines) + "\n"
 
 
@@ -377,6 +386,13 @@ async def _async_export_devices(hass: HomeAssistant, call) -> dict:
 
     schemas = await hass.async_add_executor_job(load_platform_schemas)
     devices, skipped = _collect(hass, call.data, schemas)
+    if call.data[CONF_RENAMES]:
+        try:
+            devices = rekey({key: apply_renames(key, block, call.data[CONF_RENAMES])
+                             for key, block in devices.items()}, call.data[CONF_RENAMES])
+            check_ids_unique(devices)
+        except BringInError as err:
+            raise ServiceValidationError(f"virtual: nothing was exported. {err}") from None
     report = _report(skipped)
     # Serialise first, then write atomically: a value yaml cannot represent raises
     # here with any existing file still intact (see cfg._atomic_write).

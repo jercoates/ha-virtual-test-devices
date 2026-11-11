@@ -6,9 +6,10 @@ sidebar shows every test device with its live state and lets you drive it: flip 
 set a temperature, use a lock code, press a remote's button, and watch your automation
 react.
 
-It works entirely on its own. It is also the test bench for
-[PistonCore](https://github.com/jercoates/pistoncore-v2), which is what it was built for,
-but nothing here needs PistonCore.
+It works entirely on its own, with nothing else to install. It can also **bring in other
+people's devices**: someone sends you an export of their Home Assistant, you tick the
+devices you want (all, some, or a mix from several people), and you have stand-ins to
+reproduce what they see.
 
 > [!IMPORTANT]
 > This is a fork of [twrecked/hass-virtual](https://github.com/twrecked/hass-virtual)
@@ -75,14 +76,17 @@ text**; no other kind does.
 
 **Clone a device.** A searchable list of your real devices, grouped by kind. *Clone* makes a
 test copy that reports the same abilities. One switch, **Also give the copy a way to
-receive a push or a text** (off by default), is for cloning a phone or anything a piston
-sends a message to.
+receive a push or a text** (off by default), is for cloning a phone or anything an
+automation sends a message to.
 
 **Clone everything.** Export your whole Home Assistant to one file, so a test Home
 Assistant can have a stand-in for every device. Run it on the real one; it only reads, and
-writes one file in the configuration folder. *Bringing chosen devices in* from such a file is
-the next thing to be built; until then, load the exported file as a group's devices file (see
-[Standing in for another Home Assistant](#standing-in-for-another-home-assistant)).
+writes one file in the configuration folder. Before it writes anything it **shows you every
+name** that will be in the file and lets you change any of them (see
+[Sharing an export](#sharing-an-export-and-bringing-one-in)).
+
+The second half of the tab is **Bring devices in**: choose an export file, tick the devices
+you want, and add them to a group. Do it again with another file to mix several.
 
 **Good to know**
 
@@ -144,6 +148,12 @@ Upgrading from an earlier version? These are the behaviour changes, all of them 
   with removal dates in 2027. The add-on now uses the new names, so the warnings in the
   log are gone. The sensor names need 2026.7; the thermostat works with the old name or the
   new one, whichever your Home Assistant has. Nothing a device does has changed.
+- **Export now shows you the names first.** The panel's export lists every device and entity
+  name that will go in the file, marks the ones that may carry a person's name, and lets you
+  change any of them before anything is written. Nothing is changed for you.
+- **New:** *Bring devices in* on the Clone everything tab: choose an export file, tick all,
+  some or none, and add them to a group. Several files can be mixed. Identical devices are
+  not added twice; a clash gets a number.
 - **New:** the Test Devices panel, the `virtual: {panel: false}` option, the `select` and
   `text` platforms, and the export tools.
 
@@ -238,7 +248,7 @@ a copy would not either. Choose **Receives notifications as** when you clone to
 label the copy's notifier one or the other, so an automation that sends a push or
 a text finds it. A phone running the Home Assistant companion app gets a push
 notifier automatically (its push is a service, not something that can be copied).
-A UI built on this integration (the Test Devices panel, PistonCore's page) can also
+A UI built on this integration (such as the Test Devices panel) can also
 ask for a notifier to be *added* to a device that has none; that is a setting for
 UIs and is not offered on Home Assistant's Actions screen.
 
@@ -255,8 +265,9 @@ looks like" into a bug report so somebody else can rebuild it.
 > `describe_device` returns your **real device and entity names**. Nothing is
 > sent anywhere — this integration makes no network requests of any kind, so the
 > only way that leaves your system is if you paste it somewhere. Give it a read
-> before putting it in a public issue. (PistonCore replaces names with stand-ins
-> automatically in the reports it builds; this integration on its own does not.)
+> before putting it in a public issue. This integration does not change names for
+> you; the export review (see [Standing in for another Home Assistant](#standing-in-for-another-home-assistant))
+> lets you.
 
 **A camera that hands over a real picture.** Home Assistant's own snapshot
 action does the work — it asks the camera for an image and writes the file — so a
@@ -317,12 +328,14 @@ Assistants are connected by nothing but the file.
    config folder (it will only replace a file an earlier export wrote, never one of your
    own). You can leave out devices, entities or whole integrations (for example devices a
    network integration names after MAC addresses).
-3. **Copy the file** to the test Home Assistant's config folder, then add a
-   *Virtual Test Devices* group there (Settings → Devices & services → Add
-   integration) pointing at that file.
-4. **To refresh**, export again, copy the file over, and reload the group.
-   Devices you add by hand should live in a **different group**, so a re-import
-   only replaces the imported one.
+3. **Bring the devices in.** Copy the file to wherever you run the test Home Assistant, open
+   the panel's **Clone everything** tab, and under *Bring devices in* choose the file, tick
+   what you want (or *Tick all*) and press **Bring in**. You can add them to a group you
+   already have or to a new one made for them.
+   (The older way still works: add a *Virtual Test Devices* group whose devices file is the
+   exported file, and every device in it comes in.)
+4. **To refresh**, export again and bring the file in again. Devices that are unchanged are
+   not added twice. Devices you add by hand can live in the same group or another.
 
 The file keeps your **real device and entity names and ids**. That is what makes a
 stand-in a stand-in, so read it before sharing it anywhere. Lock and alarm codes
@@ -331,6 +344,48 @@ requests of any kind. It copies **shape and starting state, not behaviour**: a
 device that reaches your real Home Assistant through a bridge keeps the shape the
 bridge gives it, and what it would look like if added natively is not something an
 export can show.
+
+### Sharing an export, and bringing one in
+
+An export is a text file you can send to someone, for example a developer who wants to see
+what your devices look like. They bring it into their own Home Assistant and have stand-ins
+for your devices, under your entity ids, to try things against. They can bring in files from
+**several people** and use all of it, some of it, or a mix.
+
+**Before you send one: look at the names.** The file holds your real device and entity names
+and ids, and a name can have a person in it (a phone called *Jane Smith's iPhone*, a person,
+a tracker). Nothing can tell for certain which names are people, so nothing is changed for
+you. When you press **Review the names, then export**, the panel:
+
+- warns that the file will contain the real names;
+- lists first the things that **may** carry a person's name (people, trackers, and a phone's
+  notifier), then every other device under *All devices* with a search box;
+- gives each one a box for its name and a box for its entity id, filled in with what is there.
+  Change what you don't want shared; leave the rest.
+
+An id carries the name too (`person.jane_smith`), so it has its own box. A different id means
+an automation copied across no longer finds that entity, and the panel says so. **Names inside
+a device's own settings are not shown and cannot be changed here**, so read the file before you
+send it. The list of what was left out is written as counts only, never by name. A device that
+is a single thing (a person, say) is filed under its entity id, and that follows the rename. (From Developer tools → Actions, `virtual.export_devices` takes the same changes as
+`renames`: `{devices: {<device key>: "New name"}, entities: {<entity id>: {name, entity_id}}}`.)
+
+**When you bring one in:**
+
+- The file is read in your browser and sent to your Home Assistant. It is held in memory for
+  half an hour and is **never saved**. Only administrators can do any of this.
+- You see the file's devices with the same name and id boxes, so you can change names on the
+  way in as well. People's names are marked the same way.
+- **A device that is identical to one you already have is not added again**, whatever file it
+  came in. Identical means the same name, the same ids and the same abilities; whether a lamp
+  is on or off does not count. Such a device shows as *Already here* and cannot be ticked.
+- **A device that only shares a name gets a number**: *Kitchen Light (2)*. An entity id that is
+  already taken becomes `light.kitchen_2`. Nothing is ever replaced, and the panel tells you
+  exactly what was renamed.
+- Entity ids belong to the whole Home Assistant, so the comparison covers **every group**, not
+  just the one you add to.
+- If a group's devices file cannot be read, nothing is brought in until it is fixed, because
+  its ids cannot be compared.
 
 ### What cloning will and will not do
 

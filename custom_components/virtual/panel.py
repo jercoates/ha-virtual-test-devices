@@ -27,6 +27,7 @@ import homeassistant.helpers.device_registry as dr
 import homeassistant.helpers.entity_registry as er
 
 from . import __version__
+from .bring_in import async_register_bring_in
 from .clone import REPRODUCIBLE_DOMAINS
 from .const import ATTR_GROUP_NAME, COMPONENT_DOMAIN
 from .export import DEFAULT_EXCLUDE_INTEGRATIONS
@@ -166,6 +167,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _ws_devices)
     websocket_api.async_register_command(hass, _ws_templates)
     websocket_api.async_register_command(hass, _ws_clonable)
+    async_register_bring_in(hass)
 
     script = pathlib.Path(__file__).with_name("frontend") / SCRIPT_NAME
     # No cache header: the file is small, and a long-lived cached copy would keep

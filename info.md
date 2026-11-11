@@ -4,8 +4,9 @@ Virtual devices for testing automations — including **clones of your real
 devices** that report the same abilities, so you can test against a stand-in
 instead of the real thing.
 
-Works on its own from Home Assistant's own Actions screen. Also the test bench
-for [PistonCore](https://github.com/jercoates/pistoncore-v2).
+Works on its own from Home Assistant's own Actions screen, and from a Test Devices
+panel in the sidebar. It can also bring in other people's devices from an export
+file, so you can reproduce what they see.
 
 **A fork of [twrecked/hass-virtual](https://github.com/twrecked/hass-virtual)
 that uses the same `virtual` domain — install this or hass-virtual, not both.**

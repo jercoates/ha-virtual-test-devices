@@ -434,3 +434,117 @@ def test_a_link_to_a_groups_devices_file_is_that_file(tmp_path):
         pytest.skip("this system cannot make symbolic links")
 
     assert export._refusal(str(link), [str(group_file)]) == "that is a group's own devices file"
+
+
+# ── renaming at the review step ─────────────────────────────────────────────
+
+def _bench_with_a_phone(monkeypatch, tmp_path):
+    """A real Home Assistant with one phone whose names carry a person's name."""
+    dev = device("d1", "Jane Smith's iPhone", manufacturer="Apple")
+    rows = [row("device_tracker.jane_smith_iphone", device_id="d1"), row("switch.plug")]
+    states = [state("device_tracker.jane_smith_iphone", "home", friendly_name="Jane Smith"),
+              state("switch.plug", "on", friendly_name="Plug")]
+    regs = Registries(rows, states, [dev], {})
+    monkeypatch.setattr(export.er, "async_get", lambda hass: type(
+        "E", (), {"entities": regs.entities, "async_get": lambda s, e: regs.entities.get(e)})())
+    monkeypatch.setattr(export.dr, "async_get", lambda hass: type(
+        "D", (), {"async_get": lambda s, d: regs._devices.get(d)})())
+    monkeypatch.setattr(export.ar, "async_get", lambda hass: regs)
+    hass = WritingHass(tmp_path)
+    hass.states = ns(get=lambda e: regs._states.get(e), async_all=lambda: list(regs._states.values()))
+    hass.config.units = Units()
+    return hass
+
+
+def test_names_typed_at_the_review_step_are_what_the_file_contains(monkeypatch, tmp_path, schemas):
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    renames = {"devices": {"d1": "Jane's iPhone"},
+               "entities": {"device_tracker.jane_smith_iphone":
+                            {"name": "Jane", "entity_id": "device_tracker.jane_iphone"}}}
+
+    result = run(export._async_export_devices(hass, call(renames=renames)))
+
+    text = pathlib.Path(result["file"]).read_text(encoding="utf-8")
+    assert "Jane's iPhone" in text and "device_tracker.jane_iphone" in text
+    assert "Smith" not in text and "jane_smith" not in text
+    assert "switch.plug" in text, "something nobody renamed must be left exactly as it was"
+    loader = BlendedCfg(FakeHass(config_dir=tmp_path), FakeEntry(pathlib.Path(result["file"])).data)
+    run(loader.async_load())
+    loaded = sorted(e["entity_id"] for group in loader.entities.values() for e in group)
+    assert loaded == ["device_tracker.jane_iphone", "switch.plug"]
+
+
+def test_without_renames_the_file_keeps_the_real_names_as_before(monkeypatch, tmp_path, schemas):
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    result = run(export._async_export_devices(hass, call()))
+    text = pathlib.Path(result["file"]).read_text(encoding="utf-8")
+    assert "Jane Smith" in text and "device_tracker.jane_smith_iphone" in text
+
+
+def test_the_file_begins_by_saying_it_holds_real_names(monkeypatch, tmp_path, schemas):
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    result = run(export._async_export_devices(hass, call()))
+    head = pathlib.Path(result["file"]).read_text(encoding="utf-8").splitlines()[:6]
+    assert any("real names and entity ids" in line for line in head)
+    assert head[0].startswith(export.EXPORT_MARK)
+
+
+def test_a_new_id_that_would_clash_is_refused_and_nothing_is_written(monkeypatch, tmp_path, schemas):
+    from homeassistant.exceptions import ServiceValidationError
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    monkeypatch.setattr(export, "_collect", lambda h, d, s: (
+        {"d1": {"name": "A", "entities": [
+            {"platform": "device_tracker", "name": "A", "entity_id": "device_tracker.a"},
+            {"platform": "device_tracker", "name": "B", "entity_id": "device_tracker.b"}]}}, []))
+    clash = {"entities": {"device_tracker.b": {"entity_id": "device_tracker.a"}}}
+    with pytest.raises(ServiceValidationError, match="device_tracker.a"):
+        run(export._async_export_devices(hass, call(file="clash.yaml", renames=clash)))
+    assert not (tmp_path / "clash.yaml").exists()
+
+
+def test_an_id_that_cannot_work_stops_the_export_before_anything_is_written(monkeypatch, tmp_path, schemas):
+    from homeassistant.exceptions import ServiceValidationError
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    renames = {"entities": {"switch.plug": {"entity_id": "light.plug"}}}
+    with pytest.raises(ServiceValidationError, match="switch"):
+        run(export._async_export_devices(hass, call(file="never.yaml", renames=renames)))
+    assert not (tmp_path / "never.yaml").exists()
+
+
+def test_what_was_left_out_is_never_named_in_the_file(monkeypatch, tmp_path, schemas):
+    """A person leaves a device out because they do not want it in the file; its name in a
+    'Skipped' comment would put it there anyway."""
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    result = run(export._async_export_devices(hass, call(
+        exclude_devices=["Jane Smith*"], exclude_entities=["switch.hall_plug"])))
+    text = pathlib.Path(result["file"]).read_text(encoding="utf-8")
+    assert "Jane" not in text and "Smith" not in text and "hall_plug" not in text
+    assert "# Skipped" in text and "x matched exclude_" in text, "the counts should still be there"
+    assert any("Jane" in str(item) for item in result["skipped"]), "the on-screen report is local and keeps the names"
+
+
+def test_a_skipped_label_with_a_line_break_cannot_write_into_the_file():
+    report = [{"device": "Nice\nsecret: injected", "reason": "matched exclude_devices (1 entities)\nmore"}]
+    comment = export._report_comment(report)
+    assert all(line.startswith("#") or not line for line in comment.splitlines()), comment
+    assert "injected" not in comment
+
+
+def test_a_lone_entity_is_not_filed_under_its_old_id_after_a_rename(monkeypatch, tmp_path, schemas):
+    hass = _bench_with_a_phone(monkeypatch, tmp_path)
+    monkeypatch.setattr(export, "_collect", lambda h, d, s: (
+        {"person.jane_smith": {"name": "Jane Smith", "entities": [
+            {"platform": "sensor", "name": "Jane Smith", "entity_id": "sensor.jane_smith"}]}}, []))
+    renames = {"entities": {"person.jane_smith": {"entity_id": "sensor.jj"}}}
+    # the key of a lone entity is its entity id; the entity's own id is renamed too
+    renames["entities"]["sensor.jane_smith"] = {"entity_id": "sensor.jj"}
+    result = run(export._async_export_devices(hass, call(file="lone.yaml", renames=renames)))
+    text = pathlib.Path(result["file"]).read_text(encoding="utf-8")
+    assert "jane_smith" not in text and "sensor.jj" in text
+
+
+def test_typed_names_of_the_wrong_shape_are_refused_by_the_action():
+    for bad in (["x"], {"entities": ["a"]}, {"devices": {"a": 1}}):
+        with pytest.raises(Exception) as caught:
+            export.EXPORT_SCHEMA({"renames": bad})
+        assert any("Invalid" in cls.__name__ for cls in type(caught.value).__mro__), bad

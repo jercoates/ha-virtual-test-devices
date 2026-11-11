@@ -20,7 +20,7 @@ const skip = JSDOM ? false : "jsdom is not installed (cd tests && npm install --
 let dom;
 if (JSDOM) {
   dom = new JSDOM("<!doctype html><body></body>", { pretendToBeVisual: true, url: "https://example.test/" });
-  for (const key of ["HTMLElement", "customElements", "Event", "Node", "localStorage"]) globalThis[key] = dom.window[key];
+  for (const key of ["HTMLElement", "customElements", "Event", "Node", "localStorage", "FileReader", "File"]) globalThis[key] = dom.window[key];
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
   const here = dirname(fileURLToPath(import.meta.url));
@@ -58,15 +58,41 @@ const CLONABLE = [
   { device_id: "r3", name: "Jeremy's phone", kind: "Companion app", domains: ["device_tracker", "notify"], entities: 5 },
 ];
 
+// What the real Home Assistant would report for the name review at export, and for a file
+// being brought in. Names here are made up.
+const REVIEW = [
+  { key: "d1", name: "Jane Smith's iPhone", kind: "Apple iPhone", area: "", personal: true,
+    entities: [{ entity_id: "device_tracker.jane_smith_iphone", platform: "device_tracker", name: "Jane Smith" }] },
+  { key: "d2", name: "Hall Plug", kind: "", area: "", personal: false,
+    entities: [{ entity_id: "switch.hall_plug", platform: "switch", name: "Hall Plug" }] },
+];
+const FILE_DEVICES = [
+  { key: "k1", name: "Kitchen Light", kind: "Hue", area: "", personal: false,
+    entities: [{ entity_id: "light.kitchen", platform: "light", name: "Kitchen" }] },
+  { key: "k2", name: "Hall Fan", kind: "", area: "", personal: false,
+    entities: [{ entity_id: "fan.hall", platform: "fan", name: "Fan" }, { entity_id: "sensor.hall_fan_w", platform: "sensor", name: "Fan watts" }] },
+  { key: "k3", name: "Sam Jones's phone", kind: "", area: "", personal: true,
+    entities: [{ entity_id: "device_tracker.sam_jones", platform: "device_tracker", name: "Sam Jones" }] },
+];
+const UPLOADED = { upload_id: "up1", source: "Exported by Virtual Test Devices 0.16.0 from Home Assistant 2026.11.0",
+  devices: FILE_DEVICES };
+
 /* A panel on a fake Home Assistant that records every action it is asked to run. */
 async function mount({ devices = DEVICES, states = baseStates(), groups = GROUPS, failWith, slowRemove,
-  readFails, failType, removeRemoves, exportReply, exportFails, templates = TEMPLATES, slowCreate, slowUnlock } = {}) {
+  readFails, failType, removeRemoves, exportReply, exportFails, templates = TEMPLATES, slowCreate, slowUnlock,
+  review = REVIEW, reviewFails, uploadStatus = 200, uploadBody = UPLOADED, previewStatus = {}, applyReply, applyFails, slowApply } = {}) {
   dom.window.localStorage.clear();
   const calls = [];
   const reads = [];
+  const ws = [];        // the panel's own commands, in order (the import and the name review)
+  const uploads = [];   // files sent to the add-on
   const subscriptions = [];
   const hass = {
     states,
+    fetchWithAuth: async (url, init) => {
+      uploads.push({ url, init });
+      return { ok: uploadStatus === 200, status: uploadStatus, json: async () => uploadBody };
+    },
     connection: { subscribeEvents: (cb, type) => new Promise((resolveSub) => {
       subscriptions.push({ type, resolveSub });
     }) },
@@ -77,6 +103,19 @@ async function mount({ devices = DEVICES, states = baseStates(), groups = GROUPS
       if (msg.type === "virtual/groups") return { version: "9.9.9", groups };
       if (msg.type === "virtual/templates") return { templates };
       if (msg.type === "virtual/clonable") return { devices: CLONABLE };
+      if (msg.type === "virtual/export_review") {
+        ws.push(msg);
+        if (reviewFails) throw new Error(reviewFails);
+        return { devices: review };
+      }
+      if (msg.type === "virtual/import_preview") { ws.push(msg); return { status: previewStatus }; }
+      if (msg.type === "virtual/import_forget") { ws.push(msg); return {}; }
+      if (msg.type === "virtual/import_apply") {
+        ws.push(msg);
+        if (slowApply) await slowApply;
+        if (applyFails) throw new Error(applyFails);
+        return applyReply || { group: msg.group || msg.new_group, added: ["Kitchen Light"], same: [], renamed: [] };
+      }
       if (msg.type === "call_service") {
         calls.push([msg.domain, msg.service, msg.service_data, msg.return_response]);
         if (exportFails) throw new Error(exportFails);
@@ -101,7 +140,7 @@ async function mount({ devices = DEVICES, states = baseStates(), groups = GROUPS
   el.hass = hass;
   await tick();
   const root = el.shadowRoot;
-  const p = { el, root, calls, reads, hass, subscriptions,
+  const p = { el, root, calls, reads, ws, uploads, hass, subscriptions,
     $: (s) => root.querySelector(s), $$: (s) => [...root.querySelectorAll(s)],
     tab: async (name) => { p.$(`nav.tabs button[data-tab=${name}]`).click(); await tick(); },
     tiles: () => p.$$(".tile"),
@@ -576,7 +615,8 @@ test("Export sends only what was filled in, and reports what it wrote and what i
   const inputs = [...pane.querySelectorAll(".opt input[type=text]")];
   inputs[0].value = "x.yaml";
   inputs[3].value = "sensor.*_power, light.hall";
-  pane.querySelector("button.primary").click(); await tick();
+  await review(p);
+  await confirmExport(p);
   assert.deepEqual(p.calls.at(-1), ["virtual", "export_devices",
     { file: "x.yaml", exclude_entities: ["sensor.*_power", "light.hall"] }, true],
     "empty fields are left out, so the add-on's own defaults apply");
@@ -591,17 +631,350 @@ test("Export: keep-state is sent when ticked, and a failure is shown", { skip },
   await p.tab("all");
   const pane = p.$('[data-pane="all"]');
   pane.querySelector("input[type=checkbox]").checked = true;
-  pane.querySelector("button.primary").click(); await tick();
+  await review(p);
+  await confirmExport(p);
   assert.equal(p.calls.at(-1)[2].persistent, true);
   assert.match(pane.querySelector(".status").textContent, /group's own devices file/);
   assert.ok(pane.querySelector(".status").classList.contains("error"));
   assert.equal(pane.querySelector("button.primary").disabled, false);
 });
 
-test("Clone everything says plainly that bringing devices in is not built yet", { skip }, async () => {
+const allPane = (p) => p.$('[data-pane="all"]');
+const review = async (p) => { allPane(p).querySelector("button.primary").click(); await tick(); };
+const buttonNamed = (p, text) => [...allPane(p).querySelectorAll("button")].find((b) => b.textContent === text);
+const confirmExport = async (p) => { buttonNamed(p, "Export with these names").click(); await tick(); };
+
+// --- the name review at export ------------------------------------------------------
+
+const inputsIn = (root) => [...root.querySelectorAll("input[type=text]")];
+const boxLabelled = (p, label) => allPane(p).querySelector(`input[aria-label="${label}"]`);
+
+test("Export reads the names first and writes nothing until the person confirms", { skip }, async () => {
   const p = await mount();
   await p.tab("all");
-  assert.match(p.$('[data-pane="all"]').textContent, /Coming next/);
+  await review(p);
+  assert.equal(p.ws.filter((m) => m.type === "virtual/export_review").length, 1);
+  assert.equal(p.calls.filter((c) => c[1] === "export_devices").length, 0, "nothing was written yet");
+  assert.match(allPane(p).textContent, /real names and entity ids/);
+  assert.ok(buttonNamed(p, "Export with these names"));
+});
+
+test("the review warns, and marks only what may carry a person's name", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  const text = allPane(p).textContent;
+  assert.match(text, /1 may carry a person's name/);
+  assert.match(text, /Jane Smith's iPhone/);
+  assert.match(text, /not shown here and cannot be changed here/, "the limit of the review is stated");
+  assert.equal(allPane(p).querySelectorAll("small.warntext").length, 1);
+  assert.match(allPane(p).querySelector("small.warntext").parentElement.textContent, /Jane Smith's iPhone/);
+});
+
+test("nothing is renamed for the person: every box starts with the real name", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  assert.equal(boxLabelled(p, "Jane Smith's iPhone: device name").value, "Jane Smith's iPhone");
+  assert.equal(boxLabelled(p, "Jane Smith's iPhone: name of device_tracker.jane_smith_iphone").value, "Jane Smith");
+  assert.equal(boxLabelled(p, "Jane Smith's iPhone: id of Jane Smith").value, "device_tracker.jane_smith_iphone");
+});
+
+test("exporting without changing anything sends no renames", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  await confirmExport(p);
+  assert.equal("renames" in p.calls.at(-1)[2], false);
+});
+
+test("only the boxes that were changed are sent, and a blank box changes nothing", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  boxLabelled(p, "Jane Smith's iPhone: device name").value = "Jane's iPhone";
+  boxLabelled(p, "Jane Smith's iPhone: name of device_tracker.jane_smith_iphone").value = "Jane";
+  boxLabelled(p, "Jane Smith's iPhone: id of Jane Smith").value = " device_tracker.jane ";
+  await confirmExport(p);
+  assert.deepEqual(p.calls.at(-1)[2].renames, {
+    devices: { d1: "Jane's iPhone" },
+    entities: { "device_tracker.jane_smith_iphone": { name: "Jane", entity_id: "device_tracker.jane" } } });
+
+  // a blank box is "no change", not "no name"
+  await review(p);
+  boxLabelled(p, "Jane Smith's iPhone: device name").value = "   ";
+  await confirmExport(p);
+  assert.equal("renames" in p.calls.at(-1)[2], false);
+});
+
+test("a change to an ordinary device is sent too, after searching the full list", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  const all = [...allPane(p).querySelectorAll("details")].find((d) => /^All \d+ devices/.test(d.querySelector("summary").textContent));
+  all.open = true; fire(all, "toggle"); await tick();
+  const search = allPane(p).querySelector('input[aria-label="Search the names"]');
+  boxLabelled(p, "Hall Plug: device name").value = "Plug";
+  search.value = "zzz"; fire(search, "input");
+  assert.equal(boxLabelled(p, "Hall Plug: device name"), null, "filtered out of view");
+  search.value = ""; fire(search, "input");
+  assert.equal(boxLabelled(p, "Hall Plug: device name").value, "Plug", "what was typed survives a search");
+  await confirmExport(p);
+  assert.deepEqual(p.calls.at(-1)[2].renames, { devices: { d2: "Plug" }, entities: {} });
+});
+
+test("the review is asked for with the same filters the export will use", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  const inputs = [...allPane(p).querySelectorAll(".opt input[type=text]")];
+  inputs[1].value = "hassio, hacs";
+  inputs[3].value = "sensor.*_power";
+  await review(p);
+  const asked = p.ws.find((m) => m.type === "virtual/export_review");
+  assert.deepEqual(asked, { type: "virtual/export_review", exclude_integrations: ["hassio", "hacs"],
+    exclude_entities: ["sensor.*_power"] });
+});
+
+test("Cancel leaves the review without exporting", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  buttonNamed(p, "Cancel").click();
+  assert.equal(buttonNamed(p, "Export with these names"), undefined);
+  assert.equal(p.calls.filter((c) => c[1] === "export_devices").length, 0);
+});
+
+test("when the names cannot be read nothing is offered and the button works again", { skip }, async () => {
+  const p = await mount({ reviewFails: "not allowed" });
+  await p.tab("all");
+  await review(p);
+  assert.match(allPane(p).querySelector(".status").textContent, /not allowed/);
+  assert.equal(buttonNamed(p, "Review the names, then export").disabled, false);
+  assert.equal(buttonNamed(p, "Export with these names"), undefined);
+});
+
+// --- bringing devices in -------------------------------------------------------------
+
+const importHost = (p) => allPane(p).querySelector(".importhost");
+const sendFile = async (p, text = "devices: {}", name = "x.yaml") => {
+  const input = allPane(p).querySelector("input[type=file]");
+  Object.defineProperty(input, "files", { value: [new dom.window.File([text], name)], configurable: true });
+  fire(input, "change");
+  await tick(60);
+};
+const rowFor = (p, name) => [...importHost(p).querySelectorAll(".row")].find((r) => r.querySelector(".what").firstChild.textContent === name);
+const tickBox = (p, name) => rowFor(p, name).querySelector("input[type=checkbox]");
+const tickIt = (p, name) => { const b = tickBox(p, name); b.checked = true; fire(b, "change"); };
+const bringIn = async (p) => { [...importHost(p).querySelectorAll("button.primary")].at(-1).click(); await tick(); };
+
+test("bringing in warns that someone else's file holds their real names", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  assert.match(allPane(p).textContent, /A file from someone else holds their real device names/);
+  assert.ok(allPane(p).querySelector("input[type=file]"));
+});
+
+test("a chosen file is sent to the add-on and its devices listed with nothing ticked", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p, "# Exported\ndevices: {}\n");
+  assert.equal(p.uploads.length, 1);
+  assert.equal(p.uploads[0].url, "/api/virtual/import_upload");
+  assert.equal(p.uploads[0].init.method, "POST");
+  assert.equal(p.uploads[0].init.body, "# Exported\ndevices: {}\n");
+  assert.deepEqual(p.ws.find((m) => m.type === "virtual/import_preview"), { type: "virtual/import_preview", upload_id: "up1" });
+  assert.deepEqual([...importHost(p).querySelectorAll(".row .what")].map((w) => w.firstChild.textContent),
+    ["Kitchen Light", "Hall Fan", "Sam Jones's phone"]);
+  assert.ok([...importHost(p).querySelectorAll("input[type=checkbox]")].every((b) => !b.checked));
+  const go = [...importHost(p).querySelectorAll("button.primary")].at(-1);
+  assert.equal(go.disabled, true);
+  assert.match(go.textContent, /Tick some devices first/);
+  assert.match(importHost(p).textContent, /3 devices in this file/);
+});
+
+test("a device that is already here cannot be ticked, and says what it matches", { skip }, async () => {
+  const p = await mount({ previewStatus: { k1: { status: "same", same_as: "Kitchen Light", name: null, ids: {} } } });
+  await p.tab("all");
+  await sendFile(p);
+  assert.equal(tickBox(p, "Kitchen Light").disabled, true);
+  assert.match(rowFor(p, "Kitchen Light").textContent, /Already here as Kitchen Light/);
+  assert.match(importHost(p).textContent, /3 devices in this file · 1 already here/);
+});
+
+test("a device that would be renamed says so before it is added", { skip }, async () => {
+  const p = await mount({ previewStatus: { k1: { status: "renamed", name: "Kitchen Light (2)",
+    ids: { "light.kitchen": "light.kitchen_2" }, same_as: null } } });
+  await p.tab("all");
+  await sendFile(p);
+  assert.match(rowFor(p, "Kitchen Light").textContent, /Will be added as Kitchen Light \(2\)/);
+  assert.match(rowFor(p, "Kitchen Light").textContent, /light\.kitchen becomes light\.kitchen_2/);
+});
+
+test("a device that may carry a person's name is marked in the file's list too", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  assert.match(rowFor(p, "Sam Jones's phone").textContent, /May carry a person's name/);
+  assert.doesNotMatch(rowFor(p, "Kitchen Light").textContent, /May carry a person's name/);
+});
+
+test("Tick all ticks what can be added and not what is already here; Tick none clears", { skip }, async () => {
+  const p = await mount({ previewStatus: { k2: { status: "same", same_as: "Hall Fan", name: null, ids: {} } } });
+  await p.tab("all");
+  await sendFile(p);
+  buttonNamed(p, "Tick all that can be added").click();
+  assert.equal(tickBox(p, "Kitchen Light").checked, true);
+  assert.equal(tickBox(p, "Hall Fan").checked, false);
+  assert.equal(tickBox(p, "Sam Jones's phone").checked, true);
+  assert.match([...importHost(p).querySelectorAll("button.primary")].at(-1).textContent, /Bring in 2 devices/);
+  buttonNamed(p, "Tick none").click();
+  assert.ok([...importHost(p).querySelectorAll("input[type=checkbox]")].every((b) => !b.checked));
+});
+
+test("one ticked device reads as one device", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  assert.equal([...importHost(p).querySelectorAll("button.primary")].at(-1).textContent, "Bring in 1 device");
+});
+
+test("Bring in sends the ticked devices to the chosen group and shows what happened", { skip }, async () => {
+  const p = await mount({ applyReply: { group: "Bench", added: ["Kitchen Light (2)"],
+    renamed: [{ was: "Kitchen Light", now: "Kitchen Light (2)", ids: { "light.kitchen": "light.kitchen_2" } }],
+    same: [{ name: "Hall Fan", same_as: "Hall Fan" }] } });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light"); tickIt(p, "Hall Fan");
+  await bringIn(p);
+  assert.deepEqual(p.ws.find((m) => m.type === "virtual/import_apply"), {
+    type: "virtual/import_apply", upload_id: "up1", group: "Bench", keys: ["k1", "k2"],
+    renames: { devices: {}, entities: {} } });
+  const text = importHost(p).textContent;
+  assert.match(text, /Brought in 1 device to Bench: Kitchen Light \(2\)/);
+  assert.match(text, /Kitchen Light was added as Kitchen Light \(2\), because that name or id was taken \(light\.kitchen is now light\.kitchen_2\)/);
+  assert.match(text, /Hall Fan was not added: it is already here as Hall Fan/);
+});
+
+test("after bringing in, the ticks are cleared and the list is compared again", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  await bringIn(p);
+  assert.equal(tickBox(p, "Kitchen Light").checked, false);
+  assert.equal(p.ws.filter((m) => m.type === "virtual/import_preview").length, 2, "compared again");
+});
+
+test("the group menu starts on the group the panel is using and can name a new one", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  const pick = importHost(p).querySelector("select");
+  assert.equal(pick.value, "Bench");
+  assert.deepEqual([...pick.options].map((o) => o.textContent), ["Bench", "Other", "A new group…"]);
+  const fresh = importHost(p).querySelector('input[aria-label="Name of the new group"]');
+  assert.equal(fresh.hidden, true);
+  pick.value = "__new__"; fire(pick, "change");
+  assert.equal(fresh.hidden, false);
+});
+
+test("a new group needs a name, and is sent by name", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  const pick = importHost(p).querySelector("select");
+  pick.value = "__new__"; fire(pick, "change");
+  tickIt(p, "Kitchen Light");
+  await bringIn(p);
+  assert.match(importHost(p).querySelector(".status").textContent, /Name the new group first/);
+  assert.equal(p.ws.filter((m) => m.type === "virtual/import_apply").length, 0);
+  const fresh = importHost(p).querySelector('input[aria-label="Name of the new group"]');
+  fresh.value = "  Sam's house ";
+  await bringIn(p);
+  const sent = p.ws.find((m) => m.type === "virtual/import_apply");
+  assert.equal(sent.new_group, "Sam's house");
+  assert.equal("group" in sent, false);
+});
+
+test("only the names changed on ticked devices are sent", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  const label = (text) => importHost(p).querySelector(`input[aria-label="${text}"]`);
+  label("Sam Jones's phone: device name").value = "Sam's phone";
+  label("Sam Jones's phone: id of Sam Jones").value = "device_tracker.sam";
+  label("Kitchen Light: device name").value = "Kitchen";
+  tickIt(p, "Sam Jones's phone");   // Kitchen Light was edited but is not ticked
+  await bringIn(p);
+  assert.deepEqual(p.ws.find((m) => m.type === "virtual/import_apply").renames, {
+    devices: { k3: "Sam's phone" },
+    entities: { "device_tracker.sam_jones": { entity_id: "device_tracker.sam" } } });
+});
+
+test("a refused bring-in shows the reason and keeps what was ticked", { skip }, async () => {
+  const p = await mount({ applyFails: "virtual: nothing was changed, because these entries would not load" });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  await bringIn(p);
+  const status = importHost(p).querySelector(".status");
+  assert.match(status.textContent, /would not load/);
+  assert.ok(status.classList.contains("error"));
+  assert.equal(tickBox(p, "Kitchen Light").checked, true);
+  assert.equal([...importHost(p).querySelectorAll("button.primary")].at(-1).disabled, false);
+});
+
+test("a file the add-on refuses shows its reason and lists nothing", { skip }, async () => {
+  const p = await mount({ uploadStatus: 400, uploadBody: { message: "That file is not an export: it is not valid yaml." } });
+  await p.tab("all");
+  await sendFile(p, "not: [valid");
+  assert.match(importHost(p).textContent, /not valid yaml/);
+  assert.ok(importHost(p).classList.contains("error"));
+  assert.equal(importHost(p).querySelectorAll(".row").length, 0);
+  assert.equal(p.ws.filter((m) => m.type === "virtual/import_preview").length, 0);
+});
+
+test("choosing another file lets the add-on forget the first", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  await sendFile(p);
+  assert.deepEqual(p.ws.filter((m) => m.type === "virtual/import_forget"), [{ type: "virtual/import_forget", upload_id: "up1" }]);
+  assert.equal(p.uploads.length, 2);
+});
+
+test("searching a file narrows the list without losing what was ticked", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  const search = importHost(p).querySelector('input[aria-label="Search this file"]');
+  search.value = "phone"; fire(search, "input");
+  assert.deepEqual([...importHost(p).querySelectorAll(".row .what")].map((w) => w.firstChild.textContent), ["Sam Jones's phone"]);
+  assert.match(importHost(p).textContent, /1 ticked/);
+  search.value = ""; fire(search, "input");
+  assert.equal(tickBox(p, "Kitchen Light").checked, true);
+});
+
+test("a search can find a device by the id of one of its parts", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  const search = importHost(p).querySelector('input[aria-label="Search this file"]');
+  search.value = "sensor.hall_fan_w"; fire(search, "input");
+  assert.deepEqual([...importHost(p).querySelectorAll(".row .what")].map((w) => w.firstChild.textContent), ["Hall Fan"]);
+});
+
+test("names in a file are shown as text, never run as markup", { skip }, async () => {
+  const sneaky = { upload_id: "up2", source: "<img src=x onerror=alert(1)>", devices: [
+    { key: "z", name: "<b>bold</b><script>1</script>", kind: "", area: "", personal: false,
+      entities: [{ entity_id: "light.z", platform: "light", name: "<i>z</i>" }] }] };
+  const p = await mount({ uploadBody: sneaky });
+  await p.tab("all");
+  await sendFile(p);
+  assert.equal(importHost(p).querySelector("b, script, img, i"), null);
+  assert.match(importHost(p).textContent, /<b>bold<\/b><script>1<\/script>/);
 });
 
 // --- found by the review agents ------------------------------------------------------
@@ -1137,4 +1510,299 @@ test("when the browser throws on every read and write, the panel still loads and
     [...codes.querySelectorAll("button")].find((b) => b.textContent === "Save a code").click();
     assert.equal(codes.querySelector("summary").textContent, "Codes (1)");
   } finally { proto.getItem = getItem; proto.setItem = setItem; }
+});
+
+test("pressing Refresh does not throw away the file being looked through", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  importHost(p).querySelector('input[aria-label="Search this file"]').value = "kit";
+  p.$("button.refresh").click(); await tick(60);
+  assert.equal(importHost(p).querySelectorAll(".row").length, 3, "the list is still there");
+  assert.equal(tickBox(p, "Kitchen Light").checked, true, "so is the tick");
+  assert.equal(importHost(p).querySelector('input[aria-label="Search this file"]').value, "kit");
+});
+
+test("a group that appears while the file is open is added to the menu without losing the choice", { skip }, async () => {
+  const groups = [{ name: "Bench", state: "loaded" }];
+  const p = await mount({ groups });
+  await p.tab("all");
+  await sendFile(p);
+  const pick = importHost(p).querySelector("select");
+  pick.value = "__new__"; fire(pick, "change");
+  groups.push({ name: "Sam's house", state: "loaded" });
+  p.$("button.refresh").click(); await tick(60);
+  assert.deepEqual([...pick.options].map((o) => o.textContent), ["Bench", "Sam's house", "A new group…"]);
+  assert.equal(pick.value, "__new__", "the person's choice is kept");
+});
+
+test("after devices go into a new group, the menu points at that group, not at 'new' again", { skip }, async () => {
+  const groups = [{ name: "Bench", state: "loaded" }];
+  const p = await mount({ groups });
+  p.hass.callWS = ((inner) => async (msg) => {
+    if (msg.type === "virtual/import_apply") groups.push({ name: msg.new_group, state: "loaded" });
+    return inner(msg);
+  })(p.hass.callWS);
+  await p.tab("all");
+  await sendFile(p);
+  const pick = importHost(p).querySelector("select");
+  pick.value = "__new__"; fire(pick, "change");
+  importHost(p).querySelector('input[aria-label="Name of the new group"]').value = "Sam's house";
+  tickIt(p, "Kitchen Light");
+  await bringIn(p); await tick(40);
+  assert.equal(pick.value, "Sam's house");
+  assert.equal(importHost(p).querySelector('input[aria-label="Name of the new group"]').hidden, true);
+});
+
+test("a refused bring-in reads the groups again, so the menu shows what really exists", { skip }, async () => {
+  const p = await mount({ applyFails: "group name used" });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  const before = p.reads.filter((r) => r === "virtual/groups").length;
+  await bringIn(p); await tick(40);
+  assert.ok(p.reads.filter((r) => r === "virtual/groups").length > before);
+  assert.match(importHost(p).querySelector(".status").textContent, /group name used/);
+});
+
+test("if tidying up after a good bring-in fails, the account of what was done stays", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  const inner = p.hass.callWS;
+  let applied = false;
+  p.hass.callWS = async (msg) => {
+    if (msg.type === "virtual/import_apply") applied = true;
+    if (applied && msg.type === "virtual/import_preview") throw new Error("lost the connection");
+    return inner(msg);
+  };
+  await bringIn(p); await tick(40);
+  const status = importHost(p).querySelector(".status");
+  assert.match(status.textContent, /Brought in 1 device/);
+  assert.doesNotMatch(status.textContent, /lost the connection/);
+  assert.equal(status.classList.contains("error"), false);
+});
+
+test("a group that failed to load is not offered to bring devices into", { skip }, async () => {
+  const p = await mount({ groups: [{ name: "Bench", state: "loaded" }, { name: "Broken", state: "failed_unload" }] });
+  await p.tab("all");
+  await sendFile(p);
+  assert.deepEqual([...importHost(p).querySelector("select").options].map((o) => o.textContent), ["Bench", "A new group…"]);
+});
+
+
+// --- found by the second review: unticking, big files, double clicks, stale lists -------
+
+const bigFile = (n) => ({ upload_id: "big", source: "", devices: Array.from({ length: n }, (_, i) => ({
+  key: `b${i}`, name: `Device ${String(i).padStart(3, "0")}`, kind: i % 2 ? "Hue Bulb" : "Acme Plug", area: "", personal: false,
+  entities: [{ entity_id: `light.d${i}`, platform: "light", name: `Part ${i}` }] })) });
+
+const allDevicesList = (p) => [...allPane(p).querySelectorAll("details")]
+  .find((d) => /^All \d+ devices/.test(d.querySelector("summary").textContent));
+
+test("unticking a device takes it out of what is brought in", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light"); tickIt(p, "Hall Fan");
+  const box = tickBox(p, "Kitchen Light");
+  box.checked = false; fire(box, "change");
+  assert.match(importHost(p).textContent, /1 ticked/);
+  await bringIn(p);
+  assert.deepEqual(p.ws.find((m) => m.type === "virtual/import_apply").keys, ["k2"]);
+});
+
+test("each tick box says which device it is for", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  assert.ok(importHost(p).querySelector('input[aria-label="Bring in Kitchen Light"]'));
+});
+
+test("a big file shows the first hundred, says so, and Tick all still takes every one", { skip }, async () => {
+  const p = await mount({ uploadBody: bigFile(120) });
+  await p.tab("all");
+  await sendFile(p);
+  assert.equal(importHost(p).querySelectorAll(".row").length, 100);
+  assert.match(importHost(p).textContent, /Showing 100 of 120\. Search to narrow it down/);
+  buttonNamed(p, "Tick all that can be added").click();
+  assert.match(importHost(p).textContent, /120 ticked/);
+  await bringIn(p);
+  assert.equal(p.ws.find((m) => m.type === "virtual/import_apply").keys.length, 120);
+});
+
+test("exactly a hundred devices show with no note", { skip }, async () => {
+  const p = await mount({ uploadBody: bigFile(100) });
+  await p.tab("all");
+  await sendFile(p);
+  assert.equal(importHost(p).querySelectorAll(".row").length, 100);
+  assert.doesNotMatch(importHost(p).textContent, /Showing 100 of/);
+});
+
+test("the export review caps its full list at a hundred too, and a search finds the rest", { skip }, async () => {
+  const p = await mount({ review: bigFile(130).devices });
+  await p.tab("all");
+  await review(p);
+  const all = allDevicesList(p);
+  assert.match(all.querySelector("summary").textContent, /All 130 devices/);
+  all.open = true; fire(all, "toggle"); await tick();
+  assert.equal(all.querySelectorAll(".row").length, 100);
+  assert.match(all.textContent, /Showing 100 of 130/);
+  const search = all.querySelector('input[aria-label="Search the names"]');
+  search.value = "light.d125"; fire(search, "input");
+  assert.equal(all.querySelectorAll(".row").length, 1, "found by the id of one of its parts");
+  search.value = "part 7"; fire(search, "input");
+  assert.ok(all.querySelectorAll(".row").length >= 1, "found by the name of one of its parts");
+});
+
+test("a second press on Bring in while the first is under way does nothing", { skip }, async () => {
+  let release;
+  const p = await mount({ slowApply: new Promise((r) => { release = r; }) });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  const go = [...importHost(p).querySelectorAll("button.primary")].at(-1);
+  go.click(); await tick();
+  assert.equal(go.disabled, true);
+  assert.equal(go.textContent, "Bringing them in…");
+  tickIt(p, "Hall Fan");   // ticking meanwhile must not wake the button up
+  assert.equal(go.disabled, true);
+  go.click(); go.click(); await tick();
+  release(); await tick(60);
+  assert.equal(p.ws.filter((m) => m.type === "virtual/import_apply").length, 1);
+});
+
+test("after bringing in, the groups are read again and the Devices tab is refreshed", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  const groupsBefore = p.reads.filter((r) => r === "virtual/groups").length;
+  const devicesBefore = p.reads.filter((r) => r === "virtual/devices").length;
+  await bringIn(p); await tick(1700);
+  assert.ok(p.reads.filter((r) => r === "virtual/groups").length > groupsBefore, "other tabs would show old groups");
+  assert.ok(p.reads.filter((r) => r === "virtual/devices").length > devicesBefore, "the Devices tab would not refresh");
+});
+
+test("searching a file is case-blind, ignores stray spaces, and can find by kind", { skip }, async () => {
+  const p = await mount({ uploadBody: bigFile(6) });
+  await p.tab("all");
+  await sendFile(p);
+  const search = importHost(p).querySelector('input[aria-label="Search this file"]');
+  const shown = () => [...importHost(p).querySelectorAll(".row .what")].map((w) => w.firstChild.textContent);
+  search.value = "  DEVICE 003 "; fire(search, "input");
+  assert.deepEqual(shown(), ["Device 003"]);
+  search.value = "hue bulb"; fire(search, "input");
+  assert.deepEqual(shown(), ["Device 001", "Device 003", "Device 005"]);
+  search.value = "nothing like this"; fire(search, "input");
+  assert.match(importHost(p).textContent, /Nothing matches\./);
+});
+
+test("a name typed into a row of the file survives searching away and back", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  importHost(p).querySelector('input[aria-label="Hall Fan: device name"]').value = "Fan";
+  const search = importHost(p).querySelector('input[aria-label="Search this file"]');
+  search.value = "kitchen"; fire(search, "input");
+  search.value = ""; fire(search, "input");
+  assert.equal(importHost(p).querySelector('input[aria-label="Hall Fan: device name"]').value, "Fan");
+});
+
+test("a file that cannot be read says so and sends nothing", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  const input = allPane(p).querySelector("input[type=file]");
+  Object.defineProperty(input, "files", { value: [{ name: "bad.yaml" }], configurable: true });
+  fire(input, "change"); await tick(60);
+  assert.equal(p.uploads.length, 0);
+  assert.ok(importHost(p).classList.contains("error"));
+  assert.ok(importHost(p).textContent.length > 0);
+});
+
+test("the same file can be chosen twice in a row", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  assert.equal(allPane(p).querySelector("input[type=file]").value, "", "the box is emptied so the same file fires again");
+});
+
+test("the file's own header is shown above its devices", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await sendFile(p);
+  assert.match(importHost(p).textContent, /Exported by Virtual Test Devices 0\.16\.0 from Home Assistant 2026\.11\.0/);
+});
+
+test("the result reads plainly in every shape it can take", { skip }, async () => {
+  const p = await mount({ applyReply: { group: "Bench", added: ["A", "B"], same: [],
+    renamed: [{ was: "A", now: "A (2)", ids: {} }] } });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  await bringIn(p);
+  const text = importHost(p).textContent;
+  assert.match(text, /Brought in 2 devices to Bench: A, B\./);
+  assert.match(text, /A was added as A \(2\), because that name or id was taken\./);
+  assert.doesNotMatch(text, /\(\)/, "no empty brackets when no id changed");
+});
+
+test("the export review says so when nothing looks like a person, and counts all the devices", { skip }, async () => {
+  const p = await mount({ review: REVIEW.filter((d) => !d.personal) });
+  await p.tab("all");
+  await review(p);
+  assert.match(allPane(p).textContent, /0 may carry a person's name/);
+  assert.match(allPane(p).textContent, /Nothing here looks like a person\. Read the full list below anyway\./);
+  assert.match(allPane(p).textContent, /All 1 devices/);
+});
+
+test("the names that may be a person's start open, the rest closed", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  await review(p);
+  const editors = [...allPane(p).querySelectorAll("details.names")];
+  assert.equal(editors.length, 1, "only the marked device has its boxes out until the list is opened");
+  assert.equal(editors[0].open, true);
+  const all = allDevicesList(p);
+  assert.equal(all.querySelectorAll(".row").length, 0, "nothing drawn until it is opened");
+  all.open = true; fire(all, "toggle"); await tick();
+  assert.equal(all.querySelectorAll("details.names").length, 1);
+  assert.equal(all.querySelector("details.names").open, false);
+  assert.match(all.textContent, /1 entity/);
+});
+
+test("a part with no id gets a name box but no id box, and never breaks bringing the device in", { skip }, async () => {
+  const odd = { upload_id: "odd", source: "", devices: [{ key: "o1", name: "Hand made", kind: "", area: "", personal: false,
+    entities: [{ entity_id: "", platform: "light", name: "No id" }, { entity_id: "light.has", platform: "light", name: "Has id" }] }] };
+  const p = await mount({ uploadBody: odd });
+  await p.tab("all");
+  await sendFile(p);
+  const boxes = [...importHost(p).querySelectorAll('input[aria-label^="Hand made: "]')].map((b) => b.getAttribute("aria-label"));
+  assert.deepEqual(boxes, ["Hand made: device name", "Hand made: name of light.has", "Hand made: id of Has id"]);
+  tickIt(p, "Hand made");
+  await bringIn(p);
+  assert.deepEqual(p.ws.find((m) => m.type === "virtual/import_apply").renames, { devices: {}, entities: {} });
+});
+
+test("a reply with no list of ones already here is still shown", { skip }, async () => {
+  const p = await mount({ applyReply: { group: "Bench", added: ["Kitchen Light"], renamed: [] } });
+  await p.tab("all");
+  await sendFile(p);
+  tickIt(p, "Kitchen Light");
+  await bringIn(p);
+  assert.match(importHost(p).textContent, /Brought in 1 device to Bench: Kitchen Light\./);
+  assert.equal(importHost(p).querySelector(".status").classList.contains("error"), false);
+});
+
+test("a file the browser fails to read is reported, not sent as an empty file", { skip }, async () => {
+  const p = await mount();
+  await p.tab("all");
+  const real = globalThis.FileReader;
+  globalThis.FileReader = class { readAsText() { setTimeout(() => this.onerror(), 0); } };
+  try { await sendFile(p); } finally { globalThis.FileReader = real; }
+  assert.equal(p.uploads.length, 0, "an empty file was sent");
+  assert.match(importHost(p).textContent, /could not be read/);
+  assert.ok(importHost(p).classList.contains("error"));
 });

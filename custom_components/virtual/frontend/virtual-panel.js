@@ -293,6 +293,74 @@ const make = (tag, className, textContent) => {
   return el;
 };
 
+const readText = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(new Error("That file could not be read."));
+  reader.readAsText(file);
+});
+
+/* The boxes that change one device's names: its own, and each part's name and id. A box left
+ * as it was changes nothing (see collectRenames). */
+const nameEditor = (device, open) => {
+  const el = make("details", "names");
+  if (open) el.open = true;
+  el.appendChild(make("summary", "", "Change names"));
+  const input = (value, label) => {
+    const box = make("input"); box.type = "text"; box.value = value || "";
+    box.setAttribute("aria-label", `${device.name}: ${label}`);
+    return box;
+  };
+  const box = { name: input(device.name, "device name"), entities: new Map() };
+  const head = make("label", "namefield");
+  head.append(make("span", "", "Device name"), box.name);
+  el.appendChild(head);
+  for (const entity of device.entities) {
+    if (!entity.entity_id) continue;   // nothing to key a change by
+    const row = make("div", "namerow");
+    const name = input(entity.name, `name of ${entity.entity_id}`);
+    const id = input(entity.entity_id, `id of ${entity.name || entity.entity_id}`);
+    box.entities.set(entity.entity_id, { name, id });
+    row.append(name, id);
+    el.appendChild(row);
+  }
+  return { el, box };
+};
+
+/* What the person changed, in the form the export and the import both take. Only boxes that
+ * differ from what the file said are sent; a blank box means no change. */
+export function collectRenames(devices, boxes) {
+  const renames = { devices: {}, entities: {} };
+  for (const device of devices) {
+    const box = boxes.get(device.key);
+    if (!box) continue;
+    const name = box.name.value.trim();
+    if (name && name !== device.name) renames.devices[device.key] = name;
+    for (const entity of device.entities) {
+      const parts = box.entities.get(entity.entity_id);
+      if (!parts) continue;
+      const change = {};
+      const newName = parts.name.value.trim();
+      if (newName && newName !== entity.name) change.name = newName;
+      const newId = parts.id.value.trim();
+      if (newId && newId.toLowerCase() !== entity.entity_id) change.entity_id = newId;
+      if (Object.keys(change).length) renames.entities[entity.entity_id] = change;
+    }
+  }
+  return renames;
+}
+
+const reviewRow = (device, editor) => {
+  const row = make("div", "row");
+  const what = make("div", "what", device.name);
+  what.appendChild(make("small", "", [device.kind,
+    `${device.entities.length} ${device.entities.length === 1 ? "entity" : "entities"}`].filter(Boolean).join(" · ")));
+  if (device.personal) what.appendChild(make("small", "warntext", "May carry a person's name"));
+  what.appendChild(editor.el);
+  row.appendChild(what);
+  return row;
+};
+
 /* ------------------------------------------------------------------ the panel */
 
 class VirtualTestDevicesPanel extends HTMLElement {
@@ -310,6 +378,7 @@ class VirtualTestDevicesPanel extends HTMLElement {
     this._rows = new Map();      // entity_id -> { rows, entity, early }
     this._readouts = new Map();  // entity_id -> element showing its state
     this._extras = new Map();    // entity_id -> function(attrs) for lock details
+    this._import = null;         // the export file being looked through on the last tab
     this._started = false;
     this._unsub = [];
     this._watchToken = null;
@@ -420,6 +489,15 @@ class VirtualTestDevicesPanel extends HTMLElement {
         .opt label small { display: block; color: var(--secondary-text-color); font-size: 12px; }
         .sect { font-size: 17px; font-weight: 500; margin: 24px 0 4px; }
         .piclist { max-height: 460px; overflow-y: auto; }
+        .warn { border-left: 4px solid var(--warning-color, #f9a825); padding: 6px 12px; margin: 12px 0; font-size: 14px; }
+        .warn p { margin: 6px 0 0; }
+        .row .what small.warntext { color: var(--warning-color, #b26a00); }
+        .row .what small.good { color: var(--success-color, #2e7d32); }
+        details.names { margin-top: 6px; }
+        .namefield, .namerow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
+        .namefield span { min-width: 90px; font-size: 12px; color: var(--secondary-text-color); }
+        .namefield input, .namerow input { flex: 1 1 160px; min-width: 0; padding: 4px 6px; }
+        .importhost { margin-top: 8px; }
         @media (max-width: 560px) { main { padding: 4px 12px 60px; } .tiles { grid-template-columns: 1fr; } }
       </style>
       <header>
@@ -745,12 +823,23 @@ class VirtualTestDevicesPanel extends HTMLElement {
 
   _renderAll() {
     const pane = this.shadowRoot.querySelector('[data-pane="all"]');
-    pane.textContent = "";
+    // Built once. This tab holds work in progress (a file being looked through, ticks, names
+    // being typed, what the last export said), and reading the groups again must not throw
+    // it away: only the group menu has to follow.
+    if (pane.childElementCount) { if (this._syncImportGroups) this._syncImportGroups(); return; }
     pane.appendChild(make("p", "lead",
-      "Copy a whole Home Assistant: export it from the real one, then bring chosen devices into a test one."));
+      "Copy a whole Home Assistant: export it from the real one, then bring all of it, some of it, or a mix of several, into a test one."));
+    this._renderExport(pane);
+    this._renderBringIn(pane);
+  }
 
+  /* ---- 1. export, with a look at every name first */
+
+  _renderExport(pane) {
     pane.appendChild(make("div", "sect", "1. Export this Home Assistant"));
-    pane.appendChild(make("p", "lead", "Run this on the real one. It only reads, and writes one file in the configuration folder. Lock and alarm codes and passwords are never copied."));
+    pane.appendChild(make("p", "lead",
+      "Run this on the real one. It only reads, and writes one file in the configuration folder. " +
+      "Lock and alarm codes and passwords are never copied. You will see every name before anything is written."));
     const field = (labelText, hint, value) => {
       const row = make("div", "opt");
       const label = make("label", "", labelText);
@@ -772,16 +861,20 @@ class VirtualTestDevicesPanel extends HTMLElement {
     pane.appendChild(keepRow);
 
     const out = make("div", "status");
-    const button = make("button", "primary", "Export");
+    const button = make("button", "primary", "Review the names, then export");
     const split = (input) => input.value.split(",").map((s) => s.trim()).filter(Boolean);
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      out.className = "status"; out.textContent = "Exporting…";
-      const data = { file: file.value.trim() || "virtual_export.yaml" };
+    const filters = () => {
+      const data = {};
       if (split(skipIntegrations).length) data.exclude_integrations = split(skipIntegrations);
       if (split(skipDevices).length) data.exclude_devices = split(skipDevices);
       if (split(skipEntities).length) data.exclude_entities = split(skipEntities);
+      return data;
+    };
+    const writeFile = async (renames) => {
+      out.className = "status"; out.textContent = "Exporting…";
+      const data = { file: file.value.trim() || "virtual_export.yaml", ...filters() };
       if (keep.checked) data.persistent = true;
+      if (renames && (Object.keys(renames.devices).length || Object.keys(renames.entities).length)) data.renames = renames;
       try {
         const reply = await this._hass.callWS({ type: "call_service", domain: "virtual", service: "export_devices",
           service_data: data, return_response: true });
@@ -801,16 +894,258 @@ class VirtualTestDevicesPanel extends HTMLElement {
       } catch (err) {
         out.className = "status error";
         out.textContent = (err && err.message) || "The export did not work.";
+      }
+    };
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      out.className = "status"; out.textContent = "Reading the names…";
+      try {
+        const reply = await this._hass.callWS({ type: "virtual/export_review", ...filters() });
+        this._drawReview(out, (reply && reply.devices) || [], async (renames) => {
+          button.disabled = true;
+          try { await writeFile(renames); } finally { button.disabled = false; }
+        }, () => { out.textContent = ""; });
+      } catch (err) {
+        out.className = "status error";
+        out.textContent = (err && err.message) || "The names could not be read.";
       } finally { button.disabled = false; }
     });
     const exportForm = make("div", "form");
     exportForm.appendChild(button);
     pane.append(exportForm, out);
+  }
 
+  /* The warning, and every name in the file as a box to change. Nothing is changed for the
+   * person: a name that looks like a person's is only marked. */
+  _drawReview(host, devices, onExport, onCancel) {
+    host.className = "status"; host.textContent = "";
+    const box = make("div", "warn");
+    box.appendChild(make("strong", "", "This file will contain the real names and entity ids of your devices."));
+    box.appendChild(make("p", "", "If you share it, anyone who has it can read them. A name that has a person in it " +
+      "(a phone, a person, a tracker) is marked below. Change anything you do not want shared, then export. " +
+      "An entity id carries its name too, so each marked thing has a box for the id as well; a different id means an " +
+      "automation copied across no longer finds it. Names written inside a device's own settings are not shown here and " +
+      "cannot be changed here."));
+    host.appendChild(box);
+
+    const editors = new Map();   // device key -> its name boxes, kept while the list is redrawn
+    const editorFor = (device, open) => {
+      if (!editors.has(device.key)) editors.set(device.key, nameEditor(device, open));
+      return editors.get(device.key);
+    };
+    const flagged = devices.filter((d) => d.personal);
+    host.appendChild(make("div", "sect", `${flagged.length} may carry a person's name`));
+    if (!flagged.length) host.appendChild(make("div", "note", "Nothing here looks like a person. Read the full list below anyway."));
+    for (const device of flagged) host.appendChild(reviewRow(device, editorFor(device, true)));
+
+    const all = make("details");
+    all.appendChild(make("summary", "", `All ${devices.length} devices`));
+    const search = make("input"); search.type = "search"; search.placeholder = "Search the names";
+    search.setAttribute("aria-label", "Search the names");
+    const list = make("div", "piclist");
+    const SHOWN = 100;
+    const draw = () => {
+      list.textContent = "";
+      const needle = search.value.trim().toLowerCase();
+      const matches = devices.filter((d) => !d.personal &&
+        (!needle || `${d.name} ${d.entities.map((e) => `${e.name} ${e.entity_id}`).join(" ")}`.toLowerCase().includes(needle)));
+      for (const device of matches.slice(0, SHOWN)) list.appendChild(reviewRow(device, editorFor(device, false)));
+      if (matches.length > SHOWN) list.appendChild(make("div", "note", `Showing ${SHOWN} of ${matches.length}. Search to narrow it down.`));
+    };
+    search.addEventListener("input", draw);
+    all.append(search, list);
+    all.addEventListener("toggle", () => { if (all.open) draw(); });
+    host.appendChild(all);
+
+    const go = make("button", "primary", "Export with these names");
+    const cancel = make("button", "", "Cancel");
+    go.addEventListener("click", () => onExport(collectRenames(devices, new Map([...editors].map(([k, v]) => [k, v.box])))));
+    cancel.addEventListener("click", onCancel);
+    const bar = make("div", "form");
+    bar.append(go, cancel);
+    host.appendChild(bar);
+  }
+
+  /* ---- 2. bring devices in, from one file at a time */
+
+  _renderBringIn(pane) {
     pane.appendChild(make("div", "sect", "2. Bring devices in"));
-    pane.appendChild(make("p", "note",
-      "Coming next: read an export file, tick the devices you want, and add them to a group here. " +
-      "A name that is already taken will be kept and the new one renamed. Until then, load the exported file as a group's devices file."));
+    pane.appendChild(make("p", "lead",
+      "Choose an export file, tick the devices you want, and add them to a group. Do it again with another file to mix several. " +
+      "A device you already have is not added twice; one that only shares a name or an id is added with a number."));
+    const warn = make("div", "warn");
+    warn.appendChild(make("strong", "", "A file from someone else holds their real device names."));
+    warn.appendChild(make("p", "", "Look through the names below before you bring them in, and change any you would rather not keep. " +
+      "The file is held in memory for half an hour and is never saved."));
+    pane.appendChild(warn);
+
+    const chooser = make("div", "form");
+    const input = make("input"); input.type = "file"; input.accept = ".yaml,.yml,.txt,text/yaml,text/plain";
+    input.setAttribute("aria-label", "Choose an export file");
+    chooser.appendChild(input);
+    const host = make("div", "importhost");
+    pane.append(chooser, host);
+    input.addEventListener("change", async () => {
+      const chosen = input.files && input.files[0];
+      if (!chosen) return;
+      host.className = "importhost status"; host.textContent = `Reading ${chosen.name}…`;
+      try {
+        await this._forgetImport();
+        const text = await readText(chosen);
+        const response = await this._hass.fetchWithAuth("/api/virtual/import_upload", { method: "POST", body: text });
+        let body = null;
+        try { body = await response.json(); } catch (_e) { /* not json: the status says enough */ }
+        if (!response.ok) throw new Error((body && body.message) || `The file could not be read (${response.status}).`);
+        const reply = await this._hass.callWS({ type: "virtual/import_preview", upload_id: body.upload_id });
+        this._import = { id: body.upload_id, source: body.source, devices: body.devices,
+          status: (reply && reply.status) || {}, ticked: new Set(), editors: new Map() };
+        this._drawImport(host);
+      } catch (err) {
+        host.className = "importhost status error";
+        host.textContent = (err && err.message) || "That file could not be read.";
+      } finally { input.value = ""; }
+    });
+  }
+
+  async _forgetImport() {
+    const held = this._import;
+    this._import = null;
+    if (held) { try { await this._hass.callWS({ type: "virtual/import_forget", upload_id: held.id }); } catch (_e) { /* it expires by itself */ } }
+  }
+
+  _drawImport(host) {
+    const imp = this._import;
+    host.className = "importhost"; host.textContent = "";
+    if (imp.source) host.appendChild(make("div", "note", imp.source));
+
+    // Where they go: a group that is running, or a new one made for them.
+    const where = make("div", "opt");
+    const whereLabel = make("label", "", "Add them to");
+    const pick = make("select"); pick.setAttribute("aria-label", "Group to add them to");
+    const fresh = make("input"); fresh.type = "text"; fresh.placeholder = "Name of the new group";
+    fresh.setAttribute("aria-label", "Name of the new group");
+    // The menu follows the groups that exist: the one chosen stays chosen, and the panel's own
+    // group is the starting point.
+    const fillPick = (preferred) => {
+      pick.textContent = "";
+      const running = this._groups.filter((g) => g.state === "loaded");   // one that failed to load cannot take them
+      for (const group of running) pick.appendChild(make("option", "", group.name)).value = group.name;
+      pick.appendChild(make("option", "", "A new group…")).value = "__new__";
+      const wanted = [preferred, this._group].find((name) => name && running.some((g) => g.name === name));
+      pick.value = preferred === "__new__" ? "__new__" : (wanted || "__new__");
+      fresh.hidden = pick.value !== "__new__";
+    };
+    fillPick();
+    this._syncImportGroups = () => fillPick(pick.value);
+    pick.addEventListener("change", () => { fresh.hidden = pick.value !== "__new__"; });
+    where.append(whereLabel, pick, fresh);
+    host.appendChild(where);
+
+    const statusOf = (d) => imp.status[d.key] || { status: "new" };
+    const addable = () => imp.devices.filter((d) => statusOf(d).status !== "same");
+    const count = make("div", "count");
+    const search = make("input"); search.type = "search"; search.placeholder = "Search this file";
+    search.setAttribute("aria-label", "Search this file");
+    const tickAll = make("button", "", "Tick all that can be added");
+    const tickNone = make("button", "", "Tick none");
+    const bar = make("div", "form"); bar.append(tickAll, tickNone);
+    const list = make("div", "piclist");
+    const go = make("button", "primary", "Bring in");
+    const goBar = make("div", "form");
+    goBar.appendChild(go);
+    const result = make("div", "status");
+    host.append(count, search, bar, list, goBar, result);
+
+    const SHOWN = 100;
+    let busy = false;   // a bring-in is under way: nothing ticked meanwhile may start another
+    const refresh = () => {
+      const n = imp.ticked.size;
+      go.textContent = busy ? "Bringing them in…" : n ? `Bring in ${n} ${n === 1 ? "device" : "devices"}` : "Tick some devices first";
+      go.disabled = busy || !n;
+      const same = imp.devices.length - addable().length;
+      count.textContent = `${imp.devices.length} devices in this file` + (same ? ` · ${same} already here` : "") + (n ? ` · ${n} ticked` : "");
+    };
+    const draw = () => {
+      list.textContent = "";
+      const needle = search.value.trim().toLowerCase();
+      const matches = imp.devices.filter((d) => !needle ||
+        `${d.name} ${d.kind} ${d.entities.map((e) => `${e.name} ${e.entity_id}`).join(" ")}`.toLowerCase().includes(needle));
+      for (const device of matches.slice(0, SHOWN)) list.appendChild(this._importRow(device, statusOf(device), refresh));
+      if (matches.length > SHOWN) list.appendChild(make("div", "note", `Showing ${SHOWN} of ${matches.length}. Search to narrow it down.`));
+      if (!matches.length) list.appendChild(make("div", "note", "Nothing matches."));
+    };
+    search.addEventListener("input", draw);
+    tickAll.addEventListener("click", () => { for (const d of addable()) imp.ticked.add(d.key); draw(); refresh(); });
+    tickNone.addEventListener("click", () => { imp.ticked.clear(); draw(); refresh(); });
+    go.addEventListener("click", async () => {
+      const toNew = pick.value === "__new__";
+      if (toNew && !fresh.value.trim()) { result.className = "status error"; result.textContent = "Name the new group first."; return; }
+      busy = true; refresh();
+      result.className = "status"; result.textContent = "Bringing them in…";
+      const boxes = new Map([...imp.editors].map(([k, v]) => [k, v.box]));
+      const renames = collectRenames(imp.devices.filter((d) => imp.ticked.has(d.key)), boxes);
+      let done;
+      try {
+        done = await this._hass.callWS({ type: "virtual/import_apply", upload_id: imp.id,
+          ...(toNew ? { new_group: fresh.value.trim() } : { group: pick.value }),
+          keys: [...imp.ticked], renames });
+      } catch (err) {
+        result.className = "status error";
+        result.textContent = (err && err.message) || "That did not work.";
+        this._loadChoices();   // so the menu shows the groups that really exist
+        busy = false; refresh();
+        return;
+      }
+      // It worked. What follows only brings the screen up to date, and must never replace
+      // the account of what was done with an error.
+      result.className = "status"; result.textContent = "";
+      this._importSummary(result, done);
+      imp.ticked.clear(); imp.editors.clear();
+      try {
+        const again = await this._hass.callWS({ type: "virtual/import_preview", upload_id: imp.id });
+        imp.status = (again && again.status) || {};
+        await this._loadChoices();
+        fillPick(done.group);   // a group made just now exists from here on
+      } catch (_e) { /* Refresh compares again */ }
+      clearTimeout(this._timer); this._timer = setTimeout(() => this._loadStructure(), 1500);
+      busy = false;
+      draw();
+      refresh();
+    });
+    draw(); refresh();
+  }
+
+  _importRow(device, status, refresh) {
+    const imp = this._import;
+    const row = make("div", "row");
+    const same = status.status === "same";
+    const tick = make("input"); tick.type = "checkbox"; tick.disabled = same;
+    tick.checked = !same && imp.ticked.has(device.key);
+    tick.setAttribute("aria-label", `Bring in ${device.name}`);
+    tick.addEventListener("change", () => { if (tick.checked) imp.ticked.add(device.key); else imp.ticked.delete(device.key); refresh(); });
+    const what = make("div", "what", device.name);
+    what.appendChild(make("small", "", [device.kind, `${device.entities.length} ${device.entities.length === 1 ? "entity" : "entities"}`]
+      .filter(Boolean).join(" · ")));
+    if (same) what.appendChild(make("small", "good", `Already here${status.same_as ? ` as ${status.same_as}` : ""}`));
+    else if (status.status === "renamed") {
+      const moved = Object.entries(status.ids || {}).map(([from, to]) => `${from} becomes ${to}`);
+      what.appendChild(make("small", "warntext", ["Will be added as " + (status.name || device.name), ...moved].join(" · ")));
+    }
+    if (device.personal) what.appendChild(make("small", "warntext", "May carry a person's name"));
+    if (!imp.editors.has(device.key)) imp.editors.set(device.key, nameEditor(device, false));
+    what.appendChild(imp.editors.get(device.key).el);
+    row.append(tick, what);
+    return row;
+  }
+
+  _importSummary(host, done) {
+    const line = (text, cls) => host.appendChild(make("div", cls || "fine", text));
+    line(`Brought in ${done.added.length} ${done.added.length === 1 ? "device" : "devices"} to ${done.group}: ${done.added.join(", ")}.`);
+    for (const item of done.renamed || []) {
+      const ids = Object.entries(item.ids || {}).map(([from, to]) => `${from} is now ${to}`);
+      line(`${item.was} was added as ${item.now}, because that name or id was taken` + (ids.length ? ` (${ids.join(", ")})` : "") + ".");
+    }
+    for (const item of done.same || []) line(`${item.name} was not added: it is already here as ${item.same_as}.`);
   }
 
   /* ------------------------------------------------------------------ Devices tab */

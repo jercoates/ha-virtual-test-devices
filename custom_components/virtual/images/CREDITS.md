@@ -1,12 +1,12 @@
 # Test camera frames
 
 These are the frames the virtual camera hands to Home Assistant. A real camera
-returns whatever it is pointing at; this one cycles through these, so a piston
+returns whatever it is pointing at; this one cycles through these, so an automation
 that takes two snapshots produces two visibly different pictures — which is how
 you can tell it fired twice rather than once.
 
 They are ordinary photographs rather than synthetic test cards on purpose: a
-camera piston that resizes, attaches or notifies should be exercised against
+camera automation that resizes, attaches or notifies should be exercised against
 the kind of image it will meet in service.
 
 ## Credit

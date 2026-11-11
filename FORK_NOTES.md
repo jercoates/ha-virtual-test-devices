@@ -407,6 +407,53 @@ All four are fixed; `tests/test_ha_deprecations.py` keeps them fixed.
   executor job at setup and handed to each camera. A camera built without the list (the
   tests, the old yaml path) still lists the folder itself.
 
+## Bringing devices in, and the name review (2026-11-07, 0.16.0)
+
+`bring_in.py` (new) reads an export file back and adds chosen devices to a group; the panel's
+Clone everything tab drives it. Design, as Jeremy ruled it:
+
+- **Identical devices are offered once.** Identical = same name, same entity ids, same
+  abilities (`fingerprint`); the starting state, unique id and persistence flag do not count,
+  and neither do firmware version or room. A device that is only the same by name gets
+  `Name (2)`; a taken entity id gets `_2`. Nothing is replaced.
+- **The comparison covers every group.** Found on a live Home Assistant 2026.11.0: bringing
+  the same entity id into a second group left it with only one entity, because ids (and
+  device keys) belong to the whole instance. `Index` is built from every group's file; an
+  unreadable group file stops the import (its ids are unknown).
+- **Names are not stripped automatically (DECISION, Jeremy 2026-11-06).** A program cannot tell
+  a person's name from a two-word room name, and an entity id carries the name too. Instead the
+  export lists every name (with a hint on person/tracker/phone-notifier rows, `looks_personal`)
+  as editable boxes, and the same boxes appear on import. `apply_renames` is the one function
+  both ends use. Names inside an entity's attribute text are not covered, and the warning says so.
+- **Transport.** The file is POSTed to `/api/virtual/import_upload` (an administrator-only
+  view; websocket messages are capped near 4 MB, an HTTP request at 16 MB) and held in memory
+  for 30 minutes (at most 8 files), never written to disk. The summary sent back to the browser
+  has names, kinds and ids but no states (a tracker's starting state is a place).
+- **Group creation** uses the integration's own config flow (`_create_group`); the entries are
+  checked against the platforms' schemas BEFORE the group is made, so a bad file leaves no
+  empty group behind.
+- **Panel gotcha:** `_loadChoices` used to redraw the whole Clone everything tab, which now
+  would wipe a file being looked through. The tab is built once; only the group menu follows.
+- Added to `export_devices`: `renames`, and a header line saying the file holds real names.
+  New websocket commands: `virtual/import_preview`, `virtual/import_apply`,
+  `virtual/import_forget`, `virtual/export_review`.
+- **Found by the review agents, fixed:** a small yaml file can stand for a gigantic structure
+  (aliases); `parse_export` counts what it expands to and stops (`EXPANDED_LIMIT`), and does NOT
+  refuse aliases, because Home Assistant's own writer emits them when a list is used twice. Two
+  imports into different groups at once could leave one entity id in both, because the other
+  groups were read before the per-group lock: one import at a time now, for the whole instance.
+  The export's `# Skipped:` comment used to name every device and entity the person had left
+  out, which defeated leaving them out: counts only now. A lone entity is filed under its
+  entity id, which survived a rename as the device key: it follows the rename now. A refused
+  import into a NEW group left an empty group behind: it is checked before the group is made.
+  `export_only` now refuses import. Ids from a file are lower-cased (the loader does).
+- **Known, not fixed:** the preview does not reflect names typed after it was made (the result
+  says what really happened); `create_device` and cloning do not compare ids with other groups
+  at all (long-standing); what Home Assistant does when an imported id matches an entity of
+  another integration is not verified.
+- PistonCore was removed from the README, `info.md` and the image credits (Jeremy,
+  2026-11-06); this file keeps the fork's history.
+
 ## Rules
 
 - **Standalone self-sufficiency is REQUIRED** (§5.6): everything works from HA's own
