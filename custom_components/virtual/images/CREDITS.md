@@ -11,7 +11,7 @@ the kind of image it will meet in service.
 
 ## Credit
 
-Photographs by **Curtis J Coates**, included here under this package's GPL-3.0
+Photographs by **Curtis Coates**, included here under this package's GPL-3.0
 licence.
 
 ## The video clip
