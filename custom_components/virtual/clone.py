@@ -58,7 +58,7 @@ import homeassistant.helpers.device_registry as dr
 import homeassistant.helpers.entity_registry as er
 
 from .cfg import unique_in_device
-from .const import COMPONENT_DOMAIN, ATTR_GROUP_NAME
+from .const import AIR_QUALITY_READINGS, COMPONENT_DOMAIN, ATTR_GROUP_NAME
 from .pistoncore_manage import (
     _find_entry,
     _mutate_and_reload,
@@ -109,6 +109,7 @@ REPRODUCIBLE_DOMAINS = {
     "cover", "device_tracker", "event", "fan", "humidifier", "light", "lock",
     "media_player", "notify", "number", "select", "sensor", "siren", "switch",
     "text", "vacuum", "valve",
+    "air_quality", "lawn_mower", "remote", "water_heater",
 }
 
 # (domain) -> the capability attributes to copy verbatim. See the module docstring
@@ -120,6 +121,8 @@ CLONE_ATTRS: dict[str, tuple[str, ...]] = {
                 "target_humidity_step"),
     "media_player": ("source_list", "sound_mode_list"),
     "vacuum": ("fan_speed_list",),
+    "water_heater": ("operation_list", "min_temp", "max_temp", "target_temp_step"),
+    "remote": ("activity_list",),
     "siren": ("available_tones",),
     "humidifier": ("available_modes", "min_humidity", "max_humidity",
                    "target_humidity_step"),
@@ -141,6 +144,7 @@ CLONE_ATTRS: dict[str, tuple[str, ...]] = {
 CLONE_FEATURES = {
     "alarm_control_panel", "camera", "climate", "cover", "fan", "humidifier",
     "light", "lock", "media_player", "notify", "siren", "vacuum",
+    "lawn_mower", "remote", "water_heater",
 }
 
 
@@ -183,10 +187,16 @@ def capability_config(hass: HomeAssistant, domain: str, attrs: dict) -> dict:
         if value is not None:
             spec[key] = _plain(value)
 
-    if domain == "climate":
+    if domain in ("climate", "water_heater"):
         # Cloned limits arrive in whatever unit HA reports them in, so the copy
         # must declare that same unit or HA converts them a second time.
         spec["temperature_unit"] = _plain(hass.config.units.temperature_unit)
+
+    elif domain == "air_quality":
+        # Which readings the original reports. Their VALUES are state, not
+        # capability, so they are not copied (the same rule as every other domain).
+        spec["readings"] = [name for name in AIR_QUALITY_READINGS
+                            if attrs.get(name) is not None]
 
     elif domain == "notify":
         # `target_key` is this integration's own label for what a notifier stands
@@ -262,7 +272,10 @@ def _is_phone(hass: HomeAssistant, device) -> bool:
     owns the device, which is the one thing a phone cannot be mistaken for."""
     if device is None:
         return False
-    for entry_id in device.config_entries:
+    # A device belongs to a single config entry from Home Assistant 2026.8 on, and
+    # reading the old list is deprecated; an older one only has the list.
+    single = getattr(device, "config_entry_id", None)
+    for entry_id in ([single] if single else device.config_entries):
         entry = hass.config_entries.async_get_entry(entry_id)
         if entry is not None and entry.domain in PUSH_CONFIG_DOMAINS:
             return True

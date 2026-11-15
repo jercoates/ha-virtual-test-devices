@@ -254,6 +254,43 @@ test("the other kinds of control send the right action", { skip }, async () => {
   assert.deepEqual(p.calls.at(-1), ["virtual", "set", { entity_id: "sensor.t_plug_w", value: "12" }]);
 });
 
+test("a water heater, mower, air sensor and remote show their controls and send their actions", { skip }, async () => {
+  const devices = [{ group: "Bench", name: "Test — Yard", key: "yard", entities: [
+    ent("water_heater.t_tank", "Test — Tank"), ent("lawn_mower.t_mow", "Test — Mow"),
+    ent("air_quality.t_air", "Test — Air"), ent("remote.t_rem", "Test — Rem")] }];
+  const p = await mount({ devices, states: {
+    "water_heater.t_tank": { state: "eco", attributes: { operation_list: ["off", "eco", "electric"],
+      temperature: 50, current_temperature: 44, away_mode: "off", supported_features: 15 } },
+    "lawn_mower.t_mow": { state: "docked", attributes: {} },
+    "air_quality.t_air": { state: "12", attributes: { particulate_matter_2_5: 12, ozone: 3 } },
+    "remote.t_rem": { state: "off", attributes: { activity_list: ["TV", "Music"], current_activity: null } },
+  } });
+  const text = p.$('[data-pane="devices"]').textContent;
+  for (const word of ["mode", "target", "current", "away", "PM2.5", "ozone", "activity"]) {
+    assert.ok(text.includes(word), `the panel shows "${word}"`);
+  }
+  assert.equal(text.includes("PM10"), false, "a reading the sensor does not carry is not offered");
+
+  const selects = [...p.$$("select")];
+  const mower = selects.find((sel) => [...sel.options].some((o) => o.value === "mowing"));
+  mower.value = "error"; fire(mower, "change");
+  assert.deepEqual(p.calls.at(-1), ["virtual", "set_lawn_mower_activity", { entity_id: "lawn_mower.t_mow", activity: "error" }]);
+  mower.value = "mowing"; fire(mower, "change");
+  assert.deepEqual(p.calls.at(-1), ["lawn_mower", "start_mowing", { entity_id: "lawn_mower.t_mow" }]);
+
+  const mode = selects.find((sel) => [...sel.options].some((o) => o.value === "electric"));
+  mode.value = "electric"; fire(mode, "change");
+  assert.deepEqual(p.calls.at(-1), ["water_heater", "set_operation_mode", { entity_id: "water_heater.t_tank", operation_mode: "electric" }]);
+
+  const activity = selects.find((sel) => [...sel.options].some((o) => o.value === "Music"));
+  activity.value = "Music"; fire(activity, "change");
+  assert.deepEqual(p.calls.at(-1), ["remote", "turn_on", { entity_id: "remote.t_rem", activity: "Music" }]);
+
+  const ozone = [...p.$$("input[type=number]")].find((box) => box.value === "3");
+  ozone.value = "7"; fire(ozone, "change");
+  assert.deepEqual(p.calls.at(-1), ["virtual", "set_air_quality", { entity_id: "air_quality.t_air", ozone: 7 }]);
+});
+
 test("an emptied number is put back, not sent as zero", { skip }, async () => {
   const devices = [{ group: "Bench", name: "Test — Dial", key: "dial.key", entities: [ent("number.t_dial", "Test — Dial")] }];
   const p = await mount({ devices, states: { "number.t_dial": { state: "7", attributes: {} } } });

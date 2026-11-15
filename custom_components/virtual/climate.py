@@ -31,6 +31,7 @@ from homeassistant.components.climate.const import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.config_validation import PLATFORM_SCHEMA
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -114,7 +115,12 @@ _HVAC_MODES = {m.value: m for m in HVACMode}
 def setup_services(hass: HomeAssistant) -> None:
     async def _set_current_temperature(call):
         for entity_id in call.data[ATTR_ENTITY_ID]:
-            get_entity_from_domain(hass, PLATFORM_DOMAIN, entity_id) \
+            # A thermostat and a water heater both report a current temperature.
+            domain = entity_id.split(".", 1)[0]
+            if domain not in (PLATFORM_DOMAIN, "water_heater"):
+                raise ServiceValidationError(
+                    f"virtual: {entity_id} has no current temperature to set")
+            get_entity_from_domain(hass, domain, entity_id) \
                 .set_current_temperature(call.data[ATTR_VALUE])
 
     if not hass.services.has_service(COMPONENT_DOMAIN, SERVICE_SET_CURRENT_TEMPERATURE):

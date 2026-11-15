@@ -64,6 +64,7 @@ SERVICE_SCHEMA = vol.Schema({
 })
 
 VIRTUAL_PLATFORMS = [
+    Platform.AIR_QUALITY,          # a read-only reading; set with virtual.set_air_quality
     Platform.ALARM_CONTROL_PANEL,  # PistonCore addition (FORK_NOTES.md)
     Platform.BINARY_SENSOR,
     Platform.BUTTON,               # PistonCore addition
@@ -75,19 +76,22 @@ VIRTUAL_PLATFORMS = [
     Platform.EVENT,                # PistonCore addition (button / scene / multi-tap)
     Platform.FAN,
     Platform.HUMIDIFIER,           # PistonCore addition
+    Platform.LAWN_MOWER,
     Platform.LIGHT,
     Platform.LOCK,
     Platform.MEDIA_PLAYER,
     Platform.NOTIFY,               # PistonCore addition (somewhere for a
                                    # piston's notifications to land)
     Platform.NUMBER,
+    Platform.REMOTE,
     Platform.SELECT,               # PistonCore addition
     Platform.SENSOR,
     Platform.SIREN,                # PistonCore addition
     Platform.SWITCH,
     Platform.TEXT,                 # PistonCore addition
     Platform.VACUUM,               # PistonCore addition
-    Platform.VALVE
+    Platform.VALVE,
+    Platform.WATER_HEATER,
 ]
 
 

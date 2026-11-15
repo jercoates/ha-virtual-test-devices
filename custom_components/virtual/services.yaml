@@ -40,6 +40,159 @@ set:
       selector:
         text:
 
+set_air_quality:
+  name: Set air quality
+  description: Set the readings of a virtual air quality sensor. Only readings the sensor carries can be set.
+  target:
+    entity:
+      integration: virtual
+      domain: air_quality
+  fields:
+    particulate_matter_2_5:
+      name: Fine particles (PM2.5)
+      description: Fine particle reading, in ug/m3. This is also the sensor's state.
+      example: 12
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    particulate_matter_10:
+      name: Coarse particles (PM10)
+      description: Coarse particle reading, in ug/m3.
+      example: 20
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    air_quality_index:
+      name: Air quality index
+      description: Air quality index.
+      example: 40
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    particulate_matter_0_1:
+      name: Ultra-fine particles (PM0.1)
+      description: Ultra-fine particles (PM0.1) reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    ozone:
+      name: Ozone
+      description: Ozone reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    carbon_monoxide:
+      name: Carbon monoxide
+      description: Carbon monoxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    carbon_dioxide:
+      name: Carbon dioxide
+      description: Carbon dioxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    sulphur_dioxide:
+      name: Sulphur dioxide
+      description: Sulphur dioxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    nitrogen_oxide:
+      name: Nitrous oxide
+      description: Nitrous oxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    nitrogen_monoxide:
+      name: Nitrogen monoxide
+      description: Nitrogen monoxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+    nitrogen_dioxide:
+      name: Nitrogen dioxide
+      description: Nitrogen dioxide reading.
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100000
+          step: any
+
+set_current_temperature:
+  name: Set current temperature
+  description: Set the current temperature a virtual thermostat or water heater reports, in its own unit.
+  target:
+    entity:
+      integration: virtual
+  fields:
+    value:
+      name: Temperature
+      description: The temperature to report.
+      required: true
+      example: 45
+      selector:
+        number:
+          mode: box
+          min: -100
+          max: 1000
+          step: any
+
+set_lawn_mower_activity:
+  name: Set lawn mower activity
+  description: Put a virtual lawn mower in any state, including error and returning, which no lawn mower action reaches.
+  target:
+    entity:
+      integration: virtual
+      domain: lawn_mower
+  fields:
+    activity:
+      name: Activity
+      description: The state to put the mower in.
+      required: true
+      example: error
+      selector:
+        select:
+          options:
+            - docked
+            - mowing
+            - paused
+            - returning
+            - idle
+            - error
+
 set_available:
   name: Set Availability
   description: Set availability of an entity.

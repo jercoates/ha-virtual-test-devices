@@ -56,6 +56,15 @@ def read_templates() -> list:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _all_devices(dev_reg) -> list:
+    """Every device in the registry. Home Assistant 2026.11 deprecates reading the
+    registry as a mapping (`.devices.values()`) and asks for plain iteration, which
+    yields the entries; an older Home Assistant yields their ids instead, so an id
+    is looked up."""
+    return [dev_reg.async_get(item) if isinstance(item, str) else item
+            for item in dev_reg.devices]
+
+
 def clonable_summary(hass: HomeAssistant) -> list:
     """The real devices that could be cloned: those with at least one entity this
     integration can reproduce. Not the test devices themselves, and not the
@@ -64,7 +73,7 @@ def clonable_summary(hass: HomeAssistant) -> list:
     ent_reg, dev_reg = er.async_get(hass), dr.async_get(hass)
     skipped = set(DEFAULT_EXCLUDE_INTEGRATIONS)
     found = []
-    for device in dev_reg.devices.values():
+    for device in _all_devices(dev_reg):
         if device.disabled_by or any(
                 ident[0] == COMPONENT_DOMAIN for ident in device.identifiers):
             continue

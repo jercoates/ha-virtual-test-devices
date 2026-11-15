@@ -224,3 +224,94 @@ def test_a_camera_given_its_frames_does_not_look_in_the_folder(monkeypatch, tmp_
 
 def test_a_camera_given_nothing_still_finds_the_bundled_frames():
     assert len(cam.VirtualCamera(cam.CAMERA_SCHEMA({"name": "C"}), False)._frames) > 0
+
+
+# ── the device registry ─────────────────────────────────────────────────────────
+#
+# Home Assistant 2026.11 deprecates reading the device registry as a mapping and a
+# device's list of config entries (both end in 2027). These run against REAL
+# registries, because the warning comes from Home Assistant noticing WHO is calling.
+
+import tempfile
+
+from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import CoreState, HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+
+import custom_components.virtual.clone as clone_module
+import custom_components.virtual.panel as panel_module
+from custom_components.virtual.const import COMPONENT_DOMAIN
+
+
+def _with_registries(coro_factory):
+    async def go():
+        hass = HomeAssistant(tempfile.mkdtemp())
+        hass.set_state(CoreState.running)
+        hass.config_entries = config_entries.ConfigEntries(hass, {})
+        await hass.config_entries.async_initialize()
+        dr.async_setup(hass)
+        await dr.async_load(hass)
+        hass.data[er.DATA_REGISTRY] = entity_registry = er.EntityRegistry(hass)
+        await entity_registry.async_load()
+
+        async def entry_for(domain):
+            entry = ConfigEntry(
+                data={}, discovery_keys={}, domain=domain, minor_version=1, options={},
+                source="user", subentries_data=[], title=domain, unique_id=None, version=1)
+            hass.config_entries._entries[entry.entry_id] = entry   # no setup wanted
+            return entry
+
+        try:
+            return await coro_factory(hass, entry_for)
+        finally:
+            await hass.async_stop(force=True)
+    return run(go())
+
+
+def test_every_device_is_listed_as_an_entry_not_an_id(caplog):
+    async def go(hass, entry_for):
+        entry = await entry_for("demo")
+        registry = dr.async_get(hass)
+        for n in range(3):
+            registry.async_get_or_create(
+                config_entry_id=entry.entry_id, identifiers={("demo", f"d{n}")}, name=f"D{n}")
+        return sorted(d.name for d in panel_module._all_devices(registry))
+
+    with caplog.at_level(logging.WARNING):
+        assert _with_registries(go) == ["D0", "D1", "D2"]
+    assert _complaints(caplog) == []
+
+
+def test_the_clone_list_logs_no_deprecation_and_still_lists_a_real_device(caplog):
+    async def go(hass, entry_for):
+        entry = await entry_for("demo")
+        registry = dr.async_get(hass)
+        device = registry.async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={("demo", "lamp")}, name="Lamp")
+        er.async_get(hass).async_get_or_create(
+            "light", "demo", "lamp-1", device_id=device.id, config_entry=entry)
+        return panel_module.clonable_summary(hass)
+
+    with caplog.at_level(logging.WARNING):
+        found = _with_registries(go)
+    assert [d["name"] for d in found] == ["Lamp"]
+    assert _complaints(caplog) == []
+
+
+def test_a_phone_is_recognised_by_its_integration_without_a_deprecation(caplog):
+    async def go(hass, entry_for):
+        registry = dr.async_get(hass)
+        phone_entry = await entry_for(sorted(clone_module.PUSH_CONFIG_DOMAINS)[0])
+        other_entry = await entry_for("demo")
+        phone = registry.async_get_or_create(
+            config_entry_id=phone_entry.entry_id, identifiers={("p", "1")}, name="Phone")
+        other = registry.async_get_or_create(
+            config_entry_id=other_entry.entry_id, identifiers={("o", "1")}, name="Lamp")
+        return (clone_module._is_phone(hass, phone), clone_module._is_phone(hass, other),
+                clone_module._is_phone(hass, None))
+
+    with caplog.at_level(logging.WARNING):
+        assert _with_registries(go) == (True, False, False)
+    assert _complaints(caplog) == []

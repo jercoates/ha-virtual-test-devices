@@ -454,6 +454,62 @@ Clone everything tab drives it. Design, as Jeremy ruled it:
 - PistonCore was removed from the README, `info.md` and the image credits (Jeremy,
   2026-11-06); this file keeps the fork's history.
 
+## Air quality, water heater, lawn mower and remote (2026-11-10, 0.17.0)
+
+Jeremy's ruling (2026-11-09/10): of the 23 Home Assistant device kinds the add-on could not
+make, these four read as devices to him and are in; weather, calendar, date and time are not
+worth cloning; update, to-do list and scene "do not read as devices"; the voice side (speech to
+text, text to speech, wake word, Assist satellite) is a separate optional add-on, not this one
+(size: the sample clips would more than double it). Nothing of the voice work is in this repo.
+
+- **`air_quality.py`.** Home Assistant's air quality entity is read-only, so a test one is set
+  with `virtual.set_air_quality` (any reading it carries; one it does not carry is refused,
+  never invented). Its state is the fine-particle (PM2.5) reading, by Home Assistant's own
+  definition, so PM2.5 is always carried. A clone copies WHICH readings the original reports
+  (`readings`), never their values. The reading names are one list, `AIR_QUALITY_READINGS` in
+  `const.py`, shared by the platform and the clone code.
+- **`water_heater.py`.** Temperature unit follows the thermostat's rule: the unit attribute is
+  picked by what the installed Home Assistant understands (`_UNIT_ATTR` and two siblings), and
+  a clone declares the unit Home Assistant reports its limits in. Home Assistant's own default
+  limits are Fahrenheit numbers (110 to 140), so a Celsius test heater gets explicit ones. A
+  heater with no mode list does not advertise the menu. `turn_off` sets `off` only when `off`
+  is a mode (Home Assistant's ON_OFF does not define more than that), and `turn_on` returns to
+  the mode it was in.
+- **`lawn_mower.py`.** `dock` goes to `docked` (the vacuum's `return_to_base` ends at
+  `returning`; a mower has a `dock` action of its own). No action reaches `error` or
+  `returning`, and a piston about a stuck mower needs `error`, so `virtual.set_lawn_mower_activity`
+  sets any state.
+- **`remote.py`.** Records `send_command`, `learn_command` and `delete_command` the way the lock
+  records its code (`last_action`, `last_command`, `last_device`, `sequence`), so a repeat is
+  still a change Home Assistant announces. A restart starts the record afresh. The activity
+  feature is only advertised with an activity list.
+- **One current-temperature action.** `virtual.set_current_temperature` was the thermostat's;
+  it now serves a water heater too (fixed in place in `climate.py`, not copied), and refuses
+  anything else with a plain message.
+- **Found by the review agent, fixed:** a water heater declared in the other temperature unit
+  read its temperatures back wrong after a restart (Home Assistant stores its own unit; 48.9 C
+  came back as 9.4 C); `water_heater.set_temperature` ignored the operation mode Home Assistant's
+  own action can carry with it; an air sensor restored from `unavailable` came back reporting
+  zero (a real reading) instead of staying unknown, and `nan` was accepted as a reading;
+  `services.yaml` listed 3 of the 11 air readings and had no entry for
+  `virtual.set_current_temperature`. Each has a test that fails without the fix.
+- **Known, not fixed:** `water_heater.turn_off` does nothing visible when `off` is not one of
+  the heater's modes (the state IS the mode); the panel sends the native mower action for a
+  state even when a clone's `supported_features` lacks it, so Home Assistant answers "not
+  supported" (the add-on's own `set_lawn_mower_activity` would work); PistonCore's own list of
+  clonable domains (`shim/routes/pages.py`) does not list the four, and PistonCore is shelved.
+- **Deprecations found while testing on 2026.11.0, fixed:** the clone list read the device
+  registry as a mapping (`panel.py`, now `_all_devices`, which also works on a Home Assistant that
+  iterates ids) and `_is_phone` read a device's list of config entries (`clone.py`, now
+  `config_entry_id` with the list as the fallback for older versions).
+- **Verified on a live Home Assistant 2026.11.0:** each kind created, driven and cloned; a water
+  heater cloned from Home Assistant's own demo heater copied its modes, limits, step and
+  features exactly and none of its values; Home Assistant itself refused a mode that is not on
+  the menu. **Not verified:** a clone from a REAL air quality sensor or remote (the demo ones
+  have no unique id, so they have no registry row and cannot be cloned, which is true of any
+  entity without one); Home Assistant 2026.7 to 2026.9 (only 2026.10.4 and 2026.11.0 were run);
+  a real browser (the panel is tested in jsdom only).
+
 ## Rules
 
 - **Standalone self-sufficiency is REQUIRED** (§5.6): everything works from HA's own

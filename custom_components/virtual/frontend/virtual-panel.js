@@ -24,6 +24,14 @@ const VACUUM_STATES = ["docked", "cleaning", "paused", "returning", "idle"];
 const MEDIA_STATES = ["off", "on", "idle", "playing", "paused"];
 const CLIMATE_MODES = ["off", "heat", "cool", "heat_cool", "auto"];
 const EVENT_TYPES = ["press", "double_press", "hold", "release"];
+const MOWER_STATES = ["docked", "mowing", "paused", "idle", "returning", "error"];
+// The readings an air quality sensor can carry, as Home Assistant names them.
+const AIR_READINGS = [
+  ["particulate_matter_2_5", "PM2.5"], ["particulate_matter_10", "PM10"],
+  ["particulate_matter_0_1", "PM0.1"], ["air_quality_index", "index"], ["ozone", "ozone"],
+  ["carbon_monoxide", "CO"], ["carbon_dioxide", "CO2"], ["sulphur_dioxide", "SO2"],
+  ["nitrogen_oxide", "N2O"], ["nitrogen_monoxide", "NO"], ["nitrogen_dioxide", "NO2"],
+];
 
 const ALARM_SERVICE = {
   disarmed: "alarm_disarm", armed_away: "alarm_arm_away", armed_home: "alarm_arm_home",
@@ -33,6 +41,9 @@ const ALARM_SERVICE = {
 const VACUUM_SERVICE = {
   cleaning: "start", idle: "stop", paused: "pause", returning: "return_to_base",
 };
+// Where an action reaches the state, the native one is used; error and returning have
+// none, so those go through the add-on's own action.
+const MOWER_SERVICE = { mowing: "start_mowing", paused: "pause", docked: "dock", idle: "stop" };
 const MEDIA_SERVICE = {
   playing: "media_play", paused: "media_pause", idle: "media_stop",
   on: "turn_on", off: "turn_off",
@@ -41,6 +52,7 @@ const MEDIA_SERVICE = {
 // Home Assistant's own feature bits, as the entity reports them in `supported_features`.
 // An entity that reports none is assumed to do everything.
 const CLIMATE_TARGET_TEMPERATURE = 1;   // ClimateEntityFeature.TARGET_TEMPERATURE
+const WATER_TARGET_TEMPERATURE = 1;     // WaterHeaterEntityFeature.TARGET_TEMPERATURE
 const MEDIA_VOLUME_SET = 4;             // MediaPlayerEntityFeature.VOLUME_SET
 const supports = (attrs, bit) =>
   typeof attrs.supported_features !== "number" || (attrs.supported_features & bit) !== 0;
@@ -95,6 +107,30 @@ export function controlsFor(domain, state, attrs = {}) {
       return [select("main", "", VACUUM_STATES, state)];
     case "humidifier":
       return [toggle(state === "on", words), number("humidity", "target %", attrs.humidity, "1")];
+    case "lawn_mower":
+      return [select("main", "", MOWER_STATES, state)];
+    case "air_quality":
+      // Only the readings this sensor carries: one it never reported is not offered.
+      return AIR_READINGS.filter(([name]) => attrs[name] !== undefined && attrs[name] !== null)
+        .map(([name, label]) => number(name, label, attrs[name]));
+    case "water_heater":
+      return [
+        // The menu and the target only when the device says it has them: offering
+        // either to a heater without one just produces an error when it is used.
+        ...(attrs.operation_list && attrs.operation_list.length
+          ? [select("mode", "mode", attrs.operation_list, state)] : []),
+        ...(supports(attrs, WATER_TARGET_TEMPERATURE)
+          ? [number("temperature", "target", attrs.temperature, "0.5")] : []),
+        number("current", "current", attrs.current_temperature, "0.5"),
+        ...(attrs.away_mode === "on" || attrs.away_mode === "off"
+          ? [toggle(attrs.away_mode === "on", words, "away", "away")] : []),
+      ];
+    case "remote":
+      return [
+        toggle(state === "on", words),
+        ...(attrs.activity_list && attrs.activity_list.length
+          ? [select("activity", "activity", attrs.activity_list, attrs.current_activity)] : []),
+      ];
     case "climate":
       return [
         select("mode", "mode", attrs.hvac_modes || CLIMATE_MODES, state),
@@ -154,6 +190,23 @@ export function callFor(domain, id, value, entityId) {
       return VACUUM_SERVICE[value] ? { domain, service: VACUUM_SERVICE[value], data: ent } : null;
     case "humidifier":
       if (id === "humidity") return { domain, service: "set_humidity", data: { ...ent, humidity: Number(value) } };
+      return { domain, service: on ? "turn_on" : "turn_off", data: ent };
+    case "lawn_mower":
+      if (MOWER_SERVICE[value]) return { domain, service: MOWER_SERVICE[value], data: ent };
+      return MOWER_STATES.includes(value)
+        ? { domain: "virtual", service: "set_lawn_mower_activity", data: { ...ent, activity: String(value) } }
+        : null;
+    case "air_quality":
+      return AIR_READINGS.some(([name]) => name === id)
+        ? { domain: "virtual", service: "set_air_quality", data: { ...ent, [id]: Number(value) } }
+        : null;
+    case "water_heater":
+      if (id === "temperature") return { domain, service: "set_temperature", data: { ...ent, temperature: Number(value) } };
+      if (id === "current") return { domain: "virtual", service: "set_current_temperature", data: { ...ent, value: Number(value) } };
+      if (id === "away") return { domain, service: "set_away_mode", data: { ...ent, away_mode: on } };
+      return { domain, service: "set_operation_mode", data: { ...ent, operation_mode: String(value) } };
+    case "remote":
+      if (id === "activity") return { domain, service: "turn_on", data: { ...ent, activity: String(value) } };
       return { domain, service: on ? "turn_on" : "turn_off", data: ent };
     case "climate":
       if (id === "temperature") return { domain, service: "set_temperature", data: { ...ent, temperature: Number(value) } };
@@ -228,6 +281,8 @@ const KIND_NAME = {
   valve: "Valve", climate: "Thermostat", humidifier: "Humidifier", vacuum: "Vacuum",
   alarm_control_panel: "Alarm panel", media_player: "Speaker", camera: "Camera",
   button: "Button", event: "Remote", device_tracker: "Tracker", notify: "Alert target",
+  air_quality: "Air quality", water_heater: "Water heater", lawn_mower: "Lawn mower",
+  remote: "Universal remote",
 };
 /* A short kind for a device, from the kinds of entity in it. */
 export function kindOf(domains) {
@@ -238,11 +293,11 @@ export function kindOf(domains) {
 const CATEGORY_ORDER = [
   ["Doors and locks", ["lock", "cover", "valve"]],
   ["Lights and switches", ["light", "switch", "fan", "siren"]],
-  ["Climate and home", ["climate", "humidifier", "vacuum"]],
+  ["Climate and home", ["climate", "humidifier", "vacuum", "water_heater", "lawn_mower", "air_quality"]],
   ["Alarm", ["alarm_control_panel"]],
   ["Media and cameras", ["media_player", "camera"]],
   ["Phones and alerts", ["device_tracker", "notify"]],
-  ["Buttons and remotes", ["button", "event"]],
+  ["Buttons and remotes", ["button", "event", "remote"]],
   ["Sensors and values", ["binary_sensor", "sensor", "number", "text", "select"]],
 ];
 /* Which group a real device belongs to in the clone list (the first that matches). */
@@ -254,7 +309,7 @@ export function categoryOf(domains) {
 }
 
 /* Is a device doing something right now? (A coloured edge on its tile.) */
-const ACTIVE_STATE = /^(on|open|opening|unlocked|unlocking|playing|heat|cool|heat_cool|auto|cleaning|armed_[a-z_]+|arming|pending|disarming|triggered|detected|wet|returning|locking|closing|jammed)$/i;
+const ACTIVE_STATE = /^(on|open|opening|unlocked|unlocking|playing|heat|cool|heat_cool|auto|cleaning|mowing|armed_[a-z_]+|arming|pending|disarming|triggered|detected|wet|returning|locking|closing|jammed)$/i;
 export const isActiveState = (state) => ACTIVE_STATE.test(String(state || ""));
 
 /* Things worth remembering in this browser only (lock codes, pinned attributes). It may be

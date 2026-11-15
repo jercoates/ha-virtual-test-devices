@@ -12,7 +12,8 @@ file, so you can reproduce what they see.
 that uses the same `virtual` domain — install this or hass-virtual, not both.**
 
 Adds `alarm_control_panel`, `camera`, `climate`, `media_player`, `notify`,
-`siren`, `humidifier`, `vacuum`, `button` and `event`; lets every device state
+`siren`, `humidifier`, `vacuum`, `button`, `event`, `air_quality`, `water_heater`,
+`lawn_mower` and `remote`; lets every device state
 its real `supported_features`, modes and limits; and fixes three silent
 data-loss bugs.
 

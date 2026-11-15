@@ -21,10 +21,13 @@ const E = "x.thing";
 // Every platform the add-on provides (see VIRTUAL_PLATFORMS in __init__.py).
 const PLATFORMS = ["alarm_control_panel", "binary_sensor", "button", "camera", "climate",
   "cover", "device_tracker", "event", "fan", "humidifier", "light", "lock", "media_player",
-  "notify", "number", "select", "sensor", "siren", "switch", "text", "vacuum", "valve"];
+  "notify", "number", "select", "sensor", "siren", "switch", "text", "vacuum", "valve",
+  "air_quality", "lawn_mower", "remote", "water_heater"];
 
 test("every platform is either controllable or deliberately read-only", () => {
-  const readOnly = PLATFORMS.filter((d) => controlsFor(d, "x", {}).length === 0);
+  // An air quality sensor offers one box per reading it carries, so it needs one to show.
+  const attrs = { air_quality: { particulate_matter_2_5: 1 } };
+  const readOnly = PLATFORMS.filter((d) => controlsFor(d, "x", attrs[d] || {}).length === 0);
   assert.deepEqual(readOnly.sort(), ["notify"],
     "a platform lost its controls (or one that should be read-only gained some)");
 });
@@ -282,4 +285,86 @@ test("states that mean 'in the middle of something' light a tile", () => {
   for (const s of ["arming", "pending", "disarming", "returning", "locking", "closing", "jammed"]) {
     assert.equal(isActiveState(s), true, s);
   }
+});
+
+// ── air quality, water heater, lawn mower, remote ───────────────────────────────
+
+test("air quality: one box per reading the sensor carries, and nothing it does not", () => {
+  const controls = controlsFor("air_quality", "12", {
+    particulate_matter_2_5: 12, ozone: 0, nitrogen_dioxide: 4.5, unit_of_measurement: "ug/m3" });
+  assert.deepEqual(controls.map((c) => c.id), ["particulate_matter_2_5", "ozone", "nitrogen_dioxide"]);
+  assert.ok(controls.every((c) => c.kind === "number"));
+  assert.equal(controls.find((c) => c.id === "ozone").value, 0, "a reading of 0 is shown, not dropped");
+  assert.ok(controls.every((c) => c.step === "any"), "a reading can be any number, not only whole ones");
+  assert.deepEqual(controlsFor("air_quality", "unknown", {}), [], "a sensor with no readings offers none");
+});
+
+test("air quality: a box sets that reading through the add-on's own action", () => {
+  assert.deepEqual(callFor("air_quality", "ozone", "31", E),
+    { domain: "virtual", service: "set_air_quality", data: { entity_id: E, ozone: 31 } });
+  assert.equal(callFor("air_quality", "radon", "5", E), null, "a reading Home Assistant does not have is refused");
+});
+
+test("water heater: the menu and the target are offered only when the device has them", () => {
+  const full = controlsFor("water_heater", "eco", {
+    operation_list: ["off", "eco"], temperature: 50, current_temperature: 44, away_mode: "off",
+    supported_features: 15 });
+  assert.deepEqual(full.map((c) => c.id), ["mode", "temperature", "current", "away"]);
+  assert.deepEqual(full[0].options, ["off", "eco"]);
+  assert.equal(full[1].step, "0.5", "a target can be set in half degrees");
+  assert.equal(full[2].step, "0.5", "so can the current temperature");
+  assert.equal(full[1].value, 50);
+  const bare = controlsFor("water_heater", "eco", { supported_features: 0, current_temperature: 44 });
+  assert.deepEqual(bare.map((c) => c.id), ["current"], "no menu, no target, no away switch");
+});
+
+test("water heater: each control reaches the action it is named for", () => {
+  assert.deepEqual(callFor("water_heater", "mode", "electric", E),
+    { domain: "water_heater", service: "set_operation_mode", data: { entity_id: E, operation_mode: "electric" } });
+  assert.deepEqual(callFor("water_heater", "temperature", "55", E),
+    { domain: "water_heater", service: "set_temperature", data: { entity_id: E, temperature: 55 } });
+  assert.deepEqual(callFor("water_heater", "current", "41", E),
+    { domain: "virtual", service: "set_current_temperature", data: { entity_id: E, value: 41 } });
+  assert.deepEqual(callFor("water_heater", "away", true, E),
+    { domain: "water_heater", service: "set_away_mode", data: { entity_id: E, away_mode: true } });
+  assert.equal(callFor("water_heater", "away", false, E).data.away_mode, false, "away can be turned OFF");
+});
+
+test("lawn mower: native actions where they exist, the add-on's own for error and returning", () => {
+  const [control] = controlsFor("lawn_mower", "docked", {});
+  assert.deepEqual(control.options, ["docked", "mowing", "paused", "idle", "returning", "error"]);
+  for (const [state, service] of [["mowing", "start_mowing"], ["paused", "pause"], ["docked", "dock"], ["idle", "stop"]]) {
+    assert.deepEqual(callFor("lawn_mower", "main", state, E), { domain: "lawn_mower", service, data: { entity_id: E } }, state);
+  }
+  for (const state of ["error", "returning"]) {
+    assert.deepEqual(callFor("lawn_mower", "main", state, E),
+      { domain: "virtual", service: "set_lawn_mower_activity", data: { entity_id: E, activity: state } }, state);
+  }
+  assert.equal(callFor("lawn_mower", "main", "flying", E), null);
+});
+
+test("remote: power, and an activity menu only when it has activities", () => {
+  assert.deepEqual(controlsFor("remote", "off", {}).map((c) => c.id), ["main"]);
+  const withActivities = controlsFor("remote", "on", { activity_list: ["TV", "Music"], current_activity: "TV" });
+  assert.deepEqual(withActivities.map((c) => c.id), ["main", "activity"]);
+  assert.equal(withActivities[1].value, "TV");
+  assert.equal(controlsFor("remote", "on", {})[0].value, true, "an on remote reads as on");
+  assert.equal(controlsFor("remote", "off", {})[0].value, false, "an off remote reads as off");
+  assert.equal(callFor("remote", "main", true, E).service, "turn_on");
+  assert.equal(callFor("remote", "main", false, E).service, "turn_off");
+  assert.deepEqual(callFor("remote", "activity", "Music", E),
+    { domain: "remote", service: "turn_on", data: { entity_id: E, activity: "Music" } });
+});
+
+test("the new kinds are named, grouped and lit up like the others", () => {
+  assert.equal(kindOf(["water_heater"]), "Water heater");
+  assert.equal(kindOf(["lawn_mower"]), "Lawn mower");
+  assert.equal(kindOf(["air_quality"]), "Air quality");
+  assert.equal(kindOf(["remote"]), "Universal remote");
+  assert.equal(categoryOf(["water_heater"]), "Climate and home");
+  assert.equal(categoryOf(["lawn_mower"]), "Climate and home");
+  assert.equal(categoryOf(["air_quality"]), "Climate and home");
+  assert.equal(categoryOf(["remote"]), "Buttons and remotes");
+  assert.equal(isActiveState("mowing"), true, "a mowing mower lights its tile");
+  assert.equal(isActiveState("docked"), false);
 });

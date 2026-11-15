@@ -107,6 +107,7 @@ PLATFORM_SCHEMA_NAMES = {
     "alarm_control_panel": ("alarm_control_panel", "ALARM_SCHEMA"),
     "binary_sensor": ("binary_sensor", "BINARY_SENSOR_SCHEMA"),
     "button": ("button", "BUTTON_SCHEMA"),
+    "air_quality": ("air_quality", "AIR_QUALITY_SCHEMA"),
     "camera": ("camera", "CAMERA_SCHEMA"),
     "climate": ("climate", "CLIMATE_SCHEMA"),
     "cover": ("cover", "COVER_SCHEMA"),
@@ -114,11 +115,13 @@ PLATFORM_SCHEMA_NAMES = {
     "event": ("event", "EVENT_SCHEMA"),
     "fan": ("fan", "FAN_SCHEMA"),
     "humidifier": ("humidifier", "HUMIDIFIER_SCHEMA"),
+    "lawn_mower": ("lawn_mower", "LAWN_MOWER_SCHEMA"),
     "light": ("light", "LIGHT_SCHEMA"),
     "lock": ("lock", "LOCK_SCHEMA"),
     "media_player": ("media_player", "MEDIA_SCHEMA"),
     "notify": ("notify", "NOTIFY_SCHEMA"),
     "number": ("number", "NUMBER_SCHEMA"),
+    "remote": ("remote", "REMOTE_SCHEMA"),
     "select": ("select", "SELECT_SCHEMA"),
     "sensor": ("sensor", "SENSOR_SCHEMA"),
     "siren": ("siren", "SIREN_SCHEMA"),
@@ -126,6 +129,7 @@ PLATFORM_SCHEMA_NAMES = {
     "text": ("text", "TEXT_SCHEMA"),
     "vacuum": ("vacuum", "VACUUM_SCHEMA"),
     "valve": ("valve", "VALVE_SCHEMA"),
+    "water_heater": ("water_heater", "WATER_HEATER_SCHEMA"),
 }
 
 

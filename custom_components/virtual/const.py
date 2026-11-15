@@ -39,6 +39,15 @@ CONF_YAML_CONFIG = "yaml_config"
 # that worked before this change behaves differently.
 CONF_SUPPORTED_FEATURES = "supported_features"
 
+# Every reading Home Assistant's air quality entity can carry, under the names it
+# publishes them by (so a clone's attributes map one to one). Here, not in the
+# platform, because the clone code needs the list without importing the platform.
+AIR_QUALITY_READINGS = (
+    "particulate_matter_2_5", "particulate_matter_10", "particulate_matter_0_1",
+    "air_quality_index", "ozone", "carbon_monoxide", "carbon_dioxide",
+    "sulphur_dioxide", "nitrogen_oxide", "nitrogen_monoxide", "nitrogen_dioxide",
+)
+
 DEFAULT_AVAILABILITY = True
 DEFAULT_PERSISTENT = True
 

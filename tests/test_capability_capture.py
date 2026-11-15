@@ -110,6 +110,7 @@ def _ha_capability_attributes(domain, entity_class):
     ("vacuum", "StateVacuumEntity"),
     ("siren", "SirenEntity"),
     ("humidifier", "HumidifierEntity"),
+    ("water_heater", "WaterHeaterEntity"),
     ("light", "LightEntity"),
     ("select", "SelectEntity"),
     ("text", "TextEntity"),
@@ -165,7 +166,13 @@ def _schema_keys(platform):
     import pathlib
     path = (pathlib.Path(clone.__file__).parent / f"{platform}.py")
     names = {"CONF_UNIT_OF_MEASUREMENT": "unit_of_measurement"}
-    for source_path in (path, path.parent / "const.py"):
+    # Names a platform imports from a sibling (the water heater shares the thermostat's
+    # option names) are defined there, so those files are read too.
+    siblings = [path.parent / f"{node.module}.py"
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module
+                and (path.parent / f"{node.module}.py").exists()]
+    for source_path in (path, path.parent / "const.py", *siblings):
         for node in ast.walk(ast.parse(source_path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
                     and isinstance(node.value.value, str):
@@ -197,6 +204,8 @@ def test_every_capturable_key_is_declared_by_its_platform(domain):
     if domain in CLONE_FEATURES:
         wanted.add("supported_features")
     wanted |= {"climate": {"temperature_unit"},
+               "water_heater": {"temperature_unit"},
+               "air_quality": {"readings"},
                "fan": {"modes", "speed_count"},
                "media_player": {"class"}}.get(domain, set())
     missing = sorted(wanted - _schema_keys(domain))
